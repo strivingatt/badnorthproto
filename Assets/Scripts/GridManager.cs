@@ -124,6 +124,15 @@ public class GridManager : MonoBehaviour
         return unit;
     }
 
+    /// <summary>
+    /// Шаг 8: все юниты, зарегистрированные в occupancy (копия списка —
+    /// безопасно итерировать, пока юниты умирают/перестраиваются).
+    /// </summary>
+    public List<Unit> GetAllUnits()
+    {
+        return new List<Unit>(occupancy.Values);
+    }
+
     /// <summary>Заблокирована ли клетка.</summary>
     public bool IsBlocked(Vector2Int cell)
     {
