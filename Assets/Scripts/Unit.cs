@@ -45,7 +45,61 @@ public class Unit : MonoBehaviour
         // Позиционируем трансформ в центр клетки.
         transform.position = GridManager.Instance.GridToWorld(cell);
 
+        // Создаём «нос» — child-объект, визуально показывающий направление взгляда.
+        CreateNose();
+
+        // Применяем текущее направление: локальный +Z юнита (и «нос» на нём)
+        // смотрит вдоль Facing.
+        ApplyFacing();
+
         // Логика появления юнита (анимация спавна, инициализация статов) появится позже.
+    }
+
+    /// <summary>Дочерний объект-указатель направления.</summary>
+    private Transform noseTransform;
+
+    /// <summary>
+    /// Создать child-объект "Nose" КОДОМ (не через префаб): маленький куб,
+    /// торчащий вперёд по локальному +Z юнита. Вызывается один раз из Init.
+    /// </summary>
+    private void CreateNose()
+    {
+        if (noseTransform != null)
+        {
+            return; // уже создан
+        }
+
+        var nose = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        nose.name = "Nose";
+        nose.transform.SetParent(transform, false);
+        nose.transform.localScale = new Vector3(0.2f, 0.2f, 0.4f);
+        // Смещение по +Z: куб выступает за переднюю грань юнита — видно, «куда нос».
+        nose.transform.localPosition = new Vector3(0f, 0f, 0.45f);
+
+        noseTransform = nose.transform;
+    }
+
+    /// <summary>
+    /// Повернуть трансформ юнита так, чтобы его локальный +Z смотрел вдоль
+    /// вектора Facing в мировых координатах сетки.
+    /// Соответствие клеток: Facing (0,1) -> мир +Z; (1,0) -> мир +X;
+    /// (0,-1) -> мир -Z; (-1,0) -> мир -X; диагонали -> 45 градусов.
+    ///
+    /// ПОЧЕМУ Atan2(Facing.x, Facing.y), а не Atan2(y, x):
+    /// стандартный atan2(y, x) измеряет угол от мировой оси +X против часовой.
+    /// Нам же нужен угол ВОКРУГ мировой оси Y (yaw в Unity — именно вокруг Y),
+    /// то есть угол ОТ направления +Z к направлению +X. В плоскости (X, Z)
+    /// «против часовой» для наблюдателя сверху — это движение от +Z к +X,
+    /// поэтому роль «синусной» координаты играет X (смещение к +X), а «косинной»
+    /// — Z (проекция на +Z). Отсюда atan2(x, z): при Facing=(0,1) угол 0°
+    /// (смотреть на +Z), при Facing=(1,0) угол +90° (поворот yaw к +X).
+    /// Если бы использовали Atan2(y, x), получили бы угол от +X — юниты
+    /// «смотрели» бы на 90° в сторону от реального направления.
+    /// </summary>
+    public void ApplyFacing()
+    {
+        float angle = Mathf.Atan2(Facing.x, Facing.y) * Mathf.Rad2Deg;
+        transform.rotation = Quaternion.Euler(0f, angle, 0f);
     }
 
     /// <summary>
