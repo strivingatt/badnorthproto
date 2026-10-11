@@ -207,11 +207,9 @@ public class Unit : MonoBehaviour
     private void OnDestroy()
     {
         // При уничтожении освобождаем клетку, чтобы она снова стала доступной.
-        // Важно: используй именно тот метод, который называется в твоем GridManager 
-        // (обычно это FreeUnit или Free, проверь название в GridManager.cs)
         if (GridManager.Instance != null)
         {
-            GridManager.Instance.FreeUnit(this);
+            GridManager.Instance.Free(GridPos, this);
         }
     }
 }
