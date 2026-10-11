@@ -41,8 +41,13 @@ public class CombatResolver : MonoBehaviour
         // (порядок юнитов не даёт преимущества).
         List<Unit> units = gm.GetAllUnits();
 
+        // Исправление бага MissingReferenceException: в occupancy могли остаться
+        // «висячие» ссылки на уничтоженных юнитов — фильтруем живых перед обоими
+        // проходами.
+        List<Unit> aliveUnits = units.FindAll(u => u != null && u.gameObject != null);
+
         // Проход 1: тик кулдаунов.
-        foreach (var unit in units)
+        foreach (var unit in aliveUnits)
         {
             if (unit != null)
             {
@@ -51,7 +56,7 @@ public class CombatResolver : MonoBehaviour
         }
 
         // Проход 2: атаки (итерируем по копии, юниты могут умирать).
-        List<Unit> attackers = new List<Unit>(units);
+        List<Unit> attackers = new List<Unit>(aliveUnits);
 
         foreach (var unit in attackers)
         {

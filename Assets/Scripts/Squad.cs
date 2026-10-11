@@ -25,6 +25,17 @@ public class Squad : MonoBehaviour
     }
 
     /// <summary>
+    /// Удалить юнита из состава отряда (вызывается из Unit.Die при смерти).
+    /// Исправление бага MissingReferenceException: без этого Squad хранил бы
+    /// ссылки на уничтоженных юнитов, и перестроение обращалось бы к мёртвым
+    /// объектам. Remove молча ничего не делает, если юнита в списке нет.
+    /// </summary>
+    public void Remove(Unit unit)
+    {
+        units.Remove(unit);
+    }
+
+    /// <summary>
     /// Команда перестроения: назначить юнитам целевые слоты (жадное назначение по
     /// Manhattan-расстоянию через SlotAssigner.Assign), ЗАРЕЗЕРВИРОВАТЬ клетки ДО
     /// начала движения и запустить корутины перемещения.
@@ -66,7 +77,14 @@ public class Squad : MonoBehaviour
             return;
         }
 
-        var pairs = SlotAssigner.Assign(units, slots);
+        // ИСПРАВЛЕНИЕ БАГА MissingReferenceException: перед началом назначения
+        // слотов фильтруем ЖИВЫХ юнитов — в units могли остаться ссылки на
+        // уничтоженные объекты (юниты, погибшие в бою до того, как Die успел
+        // их удалить; List.Remove не срабатывает для уже Destroy'нутых объектов,
+        // поэтому фильтрация — надёжная страховка).
+        List<Unit> aliveUnits = units.FindAll(u => u != null && u.gameObject != null);
+
+        var pairs = SlotAssigner.Assign(aliveUnits, slots);
 
         // Запоминаем СТАРЫЕ клетки всех назначенных юнитов ДО освобождения:
         // после FreeUnit юнит ещё не знает, куда откатываться (GridPos обновим
@@ -106,6 +124,14 @@ public class Squad : MonoBehaviour
         {
             Unit unit = pair.unit;
             Vector2Int slot = pair.slot;
+
+            // Дополнительная страховка от мёртвых юнитов: если объект успел быть
+            // уничтожен между фильтром и этим моментом — пропускаем назначение.
+            if (unit == null || unit.gameObject == null)
+            {
+                continue;
+            }
+
             Vector2Int oldCell = oldCells[unit];
 
             bool success = GridManager.Instance.TryOccupy(slot, unit);
