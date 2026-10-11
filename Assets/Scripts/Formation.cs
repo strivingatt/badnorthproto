@@ -3,12 +3,13 @@ using UnityEngine;
 
 /// <summary>
 /// Статические утилиты построения боевых порядков (формаций) на сетке:
-/// линия по Брезенхэму и раскладка шеренг (линий) отрядов.
+/// линия по Брезенхэму и раскладка слотов «шеренги» (rank-major).
 /// </summary>
 public static class Formation
 {
     /// <summary>
     /// Классический алгоритм Брезенхэма: список клеток на отрезке [a..b] включительно.
+    /// Если a == b — возвращается список из одной клетки.
     /// </summary>
     public static List<Vector2Int> Bresenham(Vector2Int a, Vector2Int b)
     {
@@ -49,12 +50,42 @@ public static class Formation
         return cells;
     }
 
+    /// <summary>Поэлементный знак числа: -1, 0 или +1.</summary>
+    private static int Sign(int v)
+    {
+        return v < 0 ? -1 : (v > 0 ? 1 : 0);
+    }
+
+    /// <summary>Ограничение клетки границами сетки [0, size).</summary>
+    private static Vector2Int ClampToGrid(Vector2Int cell)
+    {
+        var gm = GridManager.Instance;
+
+        if (gm == null)
+        {
+            return cell;
+        }
+
+        int max = gm.size - 1;
+
+        return new Vector2Int(
+            Mathf.Clamp(cell.x, 0, max),
+            Mathf.Clamp(cell.y, 0, max)
+        );
+    }
+
     /// <summary>
-    /// Слоты формации «шеренги»: базовая линия start->end (по Брезенхэму),
-    /// каждая следующая шеренга смещена НАЗАД относительно направления facing.
-    /// facing — перпендикуляр к линии; заполнение: сначала вся шеренга 0, затем 1 и т.д.
-    /// Слоты вне границ сетки пропускаются (добавляется следующий вместо них).
-    /// Если start == end, dir принимается за (0,1).
+    /// Слоты формации «шеренги» от линии start->end для count юнитов.
+    /// Логика:
+    ///  - end заранее clamp в границы сетки;
+    ///  - line = Bresenham(start, end) включая оба конца; если start == end -> line = [start];
+    ///  - в line оставляются только клетки внутри границ;
+    ///  - dir — поэлементный знак (end - start), приведённый к (-1|0|1); если start == end -> dir = (1,0);
+    ///  - facing = перпендикуляр (-dir.y, dir.x);
+    ///  - заполнение ПО ШЕРЕНГАМ (rank-major): rank = 0,1,2,...; для каждой клетки c из line
+    ///    добавляется слот c + (-facing)*rank (шеренга смещается НАЗАД); стоп при наборе count.
+    /// Возвращает ровно count слотов; если из-за выхода за границы клетки кончились —
+    /// возвращает сколько есть и логирует предупреждение.
     /// </summary>
     public static List<Vector2Int> GetLineSlots(Vector2Int start, Vector2Int end, int count, out Vector2Int facing)
     {
@@ -65,36 +96,53 @@ public static class Formation
             return new List<Vector2Int>();
         }
 
-        // Направление вдоль линии — знак разности концов.
-        Vector2Int dir = new Vector2Int(
-            Mathf.Sign(end.x - start.x),
-            Mathf.Sign(end.y - start.y)
-        );
+        // end заранее ограничиваем границами сетки.
+        end = ClampToGrid(end);
 
-        if (start == end || dir == Vector2Int.zero)
+        // Базовая линия: Брезенхэм, включая оба конца; degenerate-случай — одна клетка.
+        List<Vector2Int> line = (start == end)
+            ? new List<Vector2Int> { start }
+            : Bresenham(start, end);
+
+        // Оставляем в линии только клетки внутри границ.
+        var gm = GridManager.Instance;
+
+        if (gm != null)
         {
-            dir = new Vector2Int(0, 1);
+            line.RemoveAll(c => !gm.InBounds(c));
+        }
+
+        // Направление вдоль линии — поэлементный знак разности концов.
+        Vector2Int dir;
+
+        if (start != end)
+        {
+            dir = new Vector2Int(Sign(end.x - start.x), Sign(end.y - start.y));
+        }
+        else
+        {
+            dir = new Vector2Int(1, 0);
         }
 
         // Facing — перпендикуляр к направлению линии.
         facing = new Vector2Int(-dir.y, dir.x);
 
-        List<Vector2Int> line = Bresenham(start, end);
-        int rowLength = line.Count; // ширина шеренги = длина базовой линии
-
         var slots = new List<Vector2Int>(count);
 
-        // Шеренга r смещается НАЗАД: offset = facing * (-r).
-        for (int row = 0; row < rowLength + count && slots.Count < count; row++)
-        {
-            Vector2Int offset = facing * (-row);
+        // Заполнение по шеренгам (rank-major): rank = 0, 1, 2, ...
+        int maxRank = count + 1;      // больше count рангов всегда хватает
+        int lineLength = line.Count;
 
-            for (int i = 0; i < rowLength && slots.Count < count; i++)
+        for (int rank = 0; rank < maxRank && slots.Count < count; rank++)
+        {
+            Vector2Int offset = -facing * rank; // смещение шеренги НАЗАД
+
+            for (int i = 0; i < lineLength && slots.Count < count; i++)
             {
                 Vector2Int cell = line[i] + offset;
 
-                // Пропускаем слоты вне границ — вместо них добавится следующий.
-                if (GridManager.Instance != null && !GridManager.Instance.InBounds(cell))
+                // Пропускаем слоты вне границ — вместо них попробуется следующий.
+                if (gm != null && !gm.InBounds(cell))
                 {
                     continue;
                 }
@@ -103,6 +151,95 @@ public static class Formation
             }
         }
 
+        if (slots.Count < count)
+        {
+            Debug.LogWarning($"[Formation] GetLineSlots: набрано только {slots.Count} из {count} слотов " +
+                             $"(линия {start}->{end}, клетки закончились из-за границ сетки).");
+        }
+
         return slots;
+    }
+
+    // ------------------------------------------------------------------
+    // Самотест (запуск по клавише T из InputController):
+    // сверяет результаты GetLineSlots с ожиданиями и печатает PASS/FAIL.
+    // ------------------------------------------------------------------
+
+    /// <summary>Прогнать тесты GetLineSlots и залогировать PASS/FAIL по каждому.</summary>
+    public static void SelfTest()
+    {
+        var gm = GridManager.Instance;
+
+        if (gm == null)
+        {
+            Debug.LogError("[Formation.SelfTest] GridManager.Instance == null — тест невозможен.");
+            return;
+        }
+
+        Debug.Log("[Formation.SelfTest] Начало самотеста...");
+
+        // T1: горизонтальная линия 3 клетки, 8 юнитов -> шеренги 3+3+2.
+        TestGetLineSlots(
+            "T1",
+            new Vector2Int(5, 5), new Vector2Int(7, 5), 8,
+            new Vector2Int[]
+            {
+                new Vector2Int(5, 5), new Vector2Int(6, 5), new Vector2Int(7, 5),
+                new Vector2Int(5, 4), new Vector2Int(6, 4), new Vector2Int(7, 4),
+                new Vector2Int(5, 3), new Vector2Int(6, 3),
+            },
+            new Vector2Int(0, 1));
+
+        // T2: вырожденная точка, 4 юнита -> колонна назад от (5,5).
+        TestGetLineSlots(
+            "T2",
+            new Vector2Int(5, 5), new Vector2Int(5, 5), 4,
+            new Vector2Int[]
+            {
+                new Vector2Int(5, 5), new Vector2Int(5, 4),
+                new Vector2Int(5, 3), new Vector2Int(5, 2),
+            },
+            new Vector2Int(0, 1));
+
+        // T3: вертикальная линия вверх вдоль края, 4 юнита -> первая шеренга целиком.
+        TestGetLineSlots(
+            "T3",
+            new Vector2Int(0, 0), new Vector2Int(0, 9), 4,
+            new Vector2Int[]
+            {
+                new Vector2Int(0, 0), new Vector2Int(0, 1),
+                new Vector2Int(0, 2), new Vector2Int(0, 3),
+            },
+            new Vector2Int(-1, 0));
+
+        Debug.Log("[Formation.SelfTest] Конец самотеста.");
+    }
+
+    /// <summary>Прогон одного теста GetLineSlots со сверкой слотов и facing, лог PASS/FAIL.</summary>
+    private static void TestGetLineSlots(string name, Vector2Int start, Vector2Int end, int count,
+                                         Vector2Int[] expectedSlots, Vector2Int expectedFacing)
+    {
+        List<Vector2Int> actual = GetLineSlots(start, end, count, out Vector2Int facing);
+
+        bool ok = facing == expectedFacing && actual.Count == expectedSlots.Length;
+
+        if (ok)
+        {
+            for (int i = 0; i < actual.Count; i++)
+            {
+                if (actual[i] != expectedSlots[i])
+                {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+
+        string result = ok ? "PASS" : "FAIL";
+
+        Debug.Log($"[Formation.SelfTest] {name}: {result}\n" +
+                  $"  start={start}, end={end}, count={count}\n" +
+                  $"  ожидалось: facing={expectedFacing}, слоты=[{string.Join(", ", expectedSlots)}]\n" +
+                  $"  получено:  facing={facing}, слоты=[{string.Join(", ", actual)}]");
     }
 }
