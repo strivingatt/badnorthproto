@@ -298,11 +298,17 @@ public class InputController : MonoBehaviour
     }
 
     /// <summary>
-    /// Завершение drag (ЛКМ отпущена): лог списка слотов и facing, Hide(), возврат в Selected.
-    /// TODO (следующий шаг): валидация целевых клеток и приказ на движение отряду.
+    /// Завершение drag (ЛКМ отпущена): приказ выбранному отряду перестроиться в
+    /// формацию по посчитанным слотам, скрытие превью, возврат в Selected.
     /// </summary>
     private void EndDrag()
     {
+        if (SelectedSquad != null && lastSlots != null && lastSlots.Count > 0)
+        {
+            // Команда использует lastSlots/lastFacing — вызываем ДО Hide и до сброса.
+            SelectedSquad.CommandFormation(lastSlots, lastFacing);
+        }
+
         if (preview != null)
         {
             preview.Hide();
