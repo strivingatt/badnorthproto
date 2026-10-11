@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -125,16 +126,27 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Запустить плавное перемещение юнита в целевую клетку (прямая линия,
-    /// без обхода препятствий — препятствия добавим позже).
+    /// Запустить перемещение юнита в целевую клетку ПО ПУТИ A* (обход камней).
     /// Логическая клетка (GridPos) и резервирование в GridManager уже обновлены
     /// вызывающей стороной (Squad.CommandFormation) ДО запуска этой корутины.
+    /// Если путь не найден — warning, юнит остаётся на месте.
     /// </summary>
     public void StartMove(Vector2Int targetCell)
     {
         if (GridManager.Instance == null)
         {
             Debug.LogError("[Unit] StartMove: GridManager.Instance == null — движение отменено.", this);
+            return;
+        }
+
+        // Ищем путь через препятствия. start = текущая логическая клетка юнита.
+        List<Vector2Int> path = Pathfinding.AStar(GridPos, targetCell);
+
+        if (path == null)
+        {
+            Debug.LogWarning($"[Unit] StartMove: путь недоступен ({GridPos} -> {targetCell}) — " +
+                             $"юнит {name} остаётся на месте.", this);
+            IsMoving = false;
             return;
         }
 
@@ -145,37 +157,49 @@ public class Unit : MonoBehaviour
             StopCoroutine(moveCoroutine);
         }
 
-        moveCoroutine = StartCoroutine(MoveTo(targetCell));
+        moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
     }
 
     /// <summary>Активная корутина движения (для остановки при повторном приказе).</summary>
     private Coroutine moveCoroutine;
 
     /// <summary>
-    /// Корутина движения: пошаговое перемещение transform.position к центру
-    /// целевой клетки со скоростью moveSpeed клеток в секунду
-    /// (Vector3.MoveTowards). Движение прямое, препятствия не учитываются.
+    /// Корутина движения ПО КЛЕТКАМ пути: для каждой клетки пути последовательно
+    /// MoveTowards к GridToWorld(cell) со скоростью moveSpeed клеток в секунду,
+    /// затем следующая клетка. Изменяется ТОЛЬКО transform.position — rotation
+    /// (взгляд по Facing, «нос») не трогается.
+    /// targetCell передаётся для финальной точной доводки позиции в центр цели,
+    /// даже если последний waypoint из-за округлений чуть мимо.
     /// По окончании IsMoving = false.
     /// </summary>
-    private System.Collections.IEnumerator MoveTo(Vector2Int targetCell)
+    private System.Collections.IEnumerator MoveAlongPath(List<Vector2Int> path, Vector2Int targetCell)
     {
-        Vector3 targetWorldPos = GridManager.Instance.GridToWorld(targetCell);
-
         IsMoving = true;
 
-        while (Vector3.Distance(transform.position, targetWorldPos) > 0.01f)
+        for (int i = 0; i < path.Count; i++)
         {
-            transform.position = Vector3.MoveTowards(
-                transform.position,
-                targetWorldPos,
-                moveSpeed * Time.deltaTime
-            );
+            Vector3 waypointPos = GridManager.Instance.GridToWorld(path[i]);
 
-            yield return null;
+            while (Vector3.Distance(transform.position, waypointPos) > 0.01f)
+            {
+                transform.position = Vector3.MoveTowards(
+                    transform.position,
+                    waypointPos,
+                    moveSpeed * Time.deltaTime
+                );
+
+                yield return null;
+            }
+
+            // Точная установка в центр пройденной клетки (без остатка в 0.01).
+            transform.position = waypointPos;
         }
 
-        // Финальная точная установка в центр клетки (без остатка в 0.01).
+        // Финальная доводка: цель могла совпадать с последней клеткой пути —
+        // тогда Distance == 0 и цикл ниже сразу завершится.
+        Vector3 targetWorldPos = GridManager.Instance.GridToWorld(targetCell);
         transform.position = targetWorldPos;
+
         IsMoving = false;
         moveCoroutine = null;
     }
