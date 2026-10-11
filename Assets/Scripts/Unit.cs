@@ -127,13 +127,20 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Запустить перемещение юнита в целевую клетку ПО ПУТИ A* (обход камней).
-    /// Логическая клетка (GridPos) и резервирование в GridManager уже обновлены
-    /// вызывающей стороной (Squad.CommandFormation) ДО запуска этой корутины.
+    /// Запустить перемещение юнита из клетки fromCell в целевую клетку targetCell
+    /// ПО ПУТИ A* (обход камней).
+    ///
+    /// ВАЖНО (исправление бага телепортации): к моменту вызова GridPos УЖЕ равен
+    /// targetCell — Squad.CommandFormation обновляет логику позицию и резервирует
+    /// новую клетку ДО запуска движения. Поэтому стартовую клетку нельзя брать
+    /// из GridPos (A* искал бы путь «от цели к цели», возвращал пустой путь, и
+    /// финальная доводка превращалась в телепорт). Стартовая клетка передаётся
+    /// явно параметром fromCell — это фактическая позиция трансформа до приказа.
+    ///
     /// Если путь не найден — warning «путь недоступен», IsMoving = false,
     /// юнит остаётся на месте.
     /// </summary>
-    public void StartMove(Vector2Int targetCell)
+    public void StartMove(Vector2Int fromCell, Vector2Int targetCell)
     {
         if (GridManager.Instance == null)
         {
@@ -141,12 +148,13 @@ public class Unit : MonoBehaviour
             return;
         }
 
-        // Ищем путь через препятствия: start = текущая логическая клетка юнита.
-        List<Vector2Int> path = Pathfinding.AStar(GridPos, targetCell);
+        // Ищем путь через препятствия: start = ФАКТИЧЕСКАЯ стартовая клетка
+        // (fromCell), а НЕ GridPos — он уже обновлён вызывающей стороной.
+        List<Vector2Int> path = Pathfinding.AStar(fromCell, targetCell);
 
         if (path == null)
         {
-            Debug.LogWarning($"[Unit] StartMove: путь недоступен ({GridPos} -> {targetCell}) — " +
+            Debug.LogWarning($"[Unit] StartMove: путь недоступен ({fromCell} -> {targetCell}) — " +
                              $"юнит {name} остаётся на месте.", this);
             IsMoving = false;
             return;
