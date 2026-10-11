@@ -309,7 +309,12 @@ public class Unit : MonoBehaviour
             if (!gm.InBounds(cell)) continue;
 
             Unit occupant = gm.GetOccupant(cell);
-            if (occupant != null && occupant.team != this.team)
+            // Исправление бага «бой начинается раньше времени»: occupant != null
+            // по «unity-семантике» не гарантирует, что юнит жив — проверяем, что
+            // враг АКТИВЕН (gameObject != null, т.е. объект ещё не уничтожен).
+            // Иначе мёртвый юнит, которого A*/occupancy могли ещё «оставлять» в
+            // клетке до конца кадра (Destroy отложен), считался бы живой целью.
+            if (occupant != null && occupant.team != this.team && occupant.gameObject != null)
             {
                 targets.Add(occupant);
             }
@@ -386,6 +391,14 @@ public class Unit : MonoBehaviour
         if (GridManager.Instance != null)
         {
             GridManager.Instance.FreeUnit(this);
+        }
+
+        // Исправление бага MissingReferenceException: удаляем себя из состава
+        // отряда, чтобы Squad не хранил ссылку на уничтожаемый объект — иначе
+        // следующее перестроение (CommandFormation) обратится к мёртвому юниту.
+        if (Squad != null)
+        {
+            Squad.Remove(this);
         }
 
         Destroy(gameObject);

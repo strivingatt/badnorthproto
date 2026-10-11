@@ -161,8 +161,11 @@ public static class Formation
 
         if (slots.Count < count)
         {
-            Debug.LogWarning($"[Formation] GetLineSlots: набрано только {slots.Count} из {count} слотов " +
-                             $"(линия {start}->{end}, dir={dir}, клетки закончились из-за границ сетки).");
+            // Это НЕ баг, а предупреждение: формация обрезана границами сетки
+            // (например, построение в углу поля). Без лога игрок не видит, что
+            // часть юнитов не разместилась — они останутся на старых местах.
+            Debug.LogWarning($"[Formation] Не хватает {count - slots.Count} слотов для формации: " +
+                             $"{start}->{end} (линия обрезана до границ сетки).");
         }
 
         return slots;
