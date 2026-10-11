@@ -2,29 +2,36 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Юнит на сетке. Хранит логическую позицию, направление взгляда и принадлежность к отряду.
-/// Полноценная реализация вместо ранее существовавшей заглушки.
+/// Юнит на сетке. Хранит логическую позицию, направление взгляда и принадлежность
+/// к отряду. Движение — по клеткам пути A* (обход заблокированных клеток).
 /// </summary>
 public class Unit : MonoBehaviour
 {
     /// <summary>Индекс клетки сетки, которую занимает юнит.</summary>
     public Vector2Int GridPos;
 
-    /// <summary>Направление взгляда (по умолчанию "вперёд" по оси Y сетки).</summary>
+    /// <summary>Направление взгляда (по умолчанию «вперёд» по оси Y сетки = мир +Z).</summary>
     public Vector2Int Facing = new Vector2Int(0, 1);
 
     /// <summary>Отряд, к которому принадлежит юнит.</summary>
     public Squad Squad;
 
-    /// <summary>Идет ли сейчас анимация перемещения между клетками.</summary>
+    /// <summary>Идет ли сейчас движение между клетками.</summary>
     public bool IsMoving;
 
-    /// <summary>Скорость перемещения в клетках в секунду (для плавного Lerp позиции).</summary>
+    /// <summary>Скорость перемещения в клетках в секунду (Vector3.MoveTowards по клеткам пути A*).</summary>
     public float moveSpeed = 4f;
 
+    /// <summary>Активная корутина движения (чтобы останавливать при повторном приказе).</summary>
+    private Coroutine moveCoroutine;
+
+    /// <summary>Дочерний объект-указатель направления («нос»).</summary>
+    private Transform noseTransform;
+
     /// <summary>
-    /// Инициализировать юнита: задать позицию и зарезервировать за ним клетку в GridManager.
-    /// Если клетка уже занята/недоступна — логируем ошибку и не запускаем логику спавна.
+    /// Инициализировать юнита: задать позицию и зарезервировать за ним клетку
+    /// в GridManager. Если клетка уже занята/недоступна — логируем ошибку и
+    /// НЕ запускаем логику спавна.
     /// </summary>
     public void Init(Vector2Int cell, Squad squad)
     {
@@ -46,22 +53,19 @@ public class Unit : MonoBehaviour
         // Позиционируем трансформ в центр клетки.
         transform.position = GridManager.Instance.GridToWorld(cell);
 
-        // Создаём «нос» — child-объект, визуально показывающий направление взгляда.
+        // Создаём «нос» child-объектом КОДОМ (не через префаб) — визуальный
+        // указатель направления, торчит вперёд по локальному +Z.
         CreateNose();
 
-        // Применяем текущее направление: локальный +Z юнита (и «нос» на нём)
-        // смотрит вдоль Facing.
+        // Применяем текущее направление: локальный +Z юнита смотрит вдоль Facing.
         ApplyFacing();
-
-        // Логика появления юнита (анимация спавна, инициализация статов) появится позже.
     }
 
-    /// <summary>Дочерний объект-указатель направления.</summary>
-    private Transform noseTransform;
-
     /// <summary>
-    /// Создать child-объект "Nose" КОДОМ (не через префаб): маленький куб,
-    /// торчащий вперёд по локальному +Z юнита. Вызывается один раз из Init.
+    /// Создать child-объект "Nose" кодом (не префабом): маленький куб
+    /// localScale (0.2, 0.2, 0.4), localPosition (0, 0, 0.45) — выступает
+    /// вперёд по локальному +Z юнита. Родитель — трансформ юнита.
+    /// Вызывается один раз из Init.
     /// </summary>
     private void CreateNose()
     {
@@ -74,7 +78,6 @@ public class Unit : MonoBehaviour
         nose.name = "Nose";
         nose.transform.SetParent(transform, false);
         nose.transform.localScale = new Vector3(0.2f, 0.2f, 0.4f);
-        // Смещение по +Z: куб выступает за переднюю грань юнита — видно, «куда нос».
         nose.transform.localPosition = new Vector3(0f, 0f, 0.45f);
 
         noseTransform = nose.transform;
@@ -82,20 +85,18 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Повернуть трансформ юнита так, чтобы его локальный +Z смотрел вдоль
-    /// вектора Facing в мировых координатах сетки.
-    /// Соответствие клеток: Facing (0,1) -> мир +Z; (1,0) -> мир +X;
-    /// (0,-1) -> мир -Z; (-1,0) -> мир -X; диагонали -> 45 градусов.
+    /// вектора Facing в мировых координатах.
+    /// Соответствие: Facing (0,1) -> мир +Z; (1,0) -> мир +X; (0,-1) -> мир -Z;
+    /// (-1,0) -> мир -X; диагонали -> 45 градусов.
     ///
     /// ПОЧЕМУ Atan2(Facing.x, Facing.y), а не Atan2(y, x):
-    /// стандартный atan2(y, x) измеряет угол от мировой оси +X против часовой.
-    /// Нам же нужен угол ВОКРУГ мировой оси Y (yaw в Unity — именно вокруг Y),
-    /// то есть угол ОТ направления +Z к направлению +X. В плоскости (X, Z)
-    /// «против часовой» для наблюдателя сверху — это движение от +Z к +X,
-    /// поэтому роль «синусной» координаты играет X (смещение к +X), а «косинной»
-    /// — Z (проекция на +Z). Отсюда atan2(x, z): при Facing=(0,1) угол 0°
-    /// (смотреть на +Z), при Facing=(1,0) угол +90° (поворот yaw к +X).
-    /// Если бы использовали Atan2(y, x), получили бы угол от +X — юниты
-    /// «смотрели» бы на 90° в сторону от реального направления.
+    /// стандартный atan2(y, x) измеряет угол ОТ мировой оси +X против часовой,
+    /// но в Unity yaw — это угол ВОКРУГ оси Y, отсчитываемый ОТ направления +Z
+    /// к направлению +X. В плоскости (X, Z) «синусной» координатой угла от +Z
+    /// является X, а «косинной» — проекция на Z (у нас ось Y сетки = мир +Z).
+    /// Поэтому аргументы идут как (x, y): Facing=(0,1) даёт 0° (смотреть +Z),
+    /// Facing=(1,0) даёт +90° (yaw к +X). Если бы использовали Atan2(y, x),
+    /// юниты «смотрели» бы на 90° в сторону от реального направления.
     /// </summary>
     public void ApplyFacing()
     {
@@ -129,7 +130,8 @@ public class Unit : MonoBehaviour
     /// Запустить перемещение юнита в целевую клетку ПО ПУТИ A* (обход камней).
     /// Логическая клетка (GridPos) и резервирование в GridManager уже обновлены
     /// вызывающей стороной (Squad.CommandFormation) ДО запуска этой корутины.
-    /// Если путь не найден — warning, юнит остаётся на месте.
+    /// Если путь не найден — warning «путь недоступен», IsMoving = false,
+    /// юнит остаётся на месте.
     /// </summary>
     public void StartMove(Vector2Int targetCell)
     {
@@ -139,7 +141,7 @@ public class Unit : MonoBehaviour
             return;
         }
 
-        // Ищем путь через препятствия. start = текущая логическая клетка юнита.
+        // Ищем путь через препятствия: start = текущая логическая клетка юнита.
         List<Vector2Int> path = Pathfinding.AStar(GridPos, targetCell);
 
         if (path == null)
@@ -160,16 +162,12 @@ public class Unit : MonoBehaviour
         moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
     }
 
-    /// <summary>Активная корутина движения (для остановки при повторном приказе).</summary>
-    private Coroutine moveCoroutine;
-
     /// <summary>
     /// Корутина движения ПО КЛЕТКАМ пути: для каждой клетки пути последовательно
     /// MoveTowards к GridToWorld(cell) со скоростью moveSpeed клеток в секунду,
     /// затем следующая клетка. Изменяется ТОЛЬКО transform.position — rotation
     /// (взгляд по Facing, «нос») не трогается.
-    /// targetCell передаётся для финальной точной доводки позиции в центр цели,
-    /// даже если последний waypoint из-за округлений чуть мимо.
+    /// targetCell передаётся для финальной точной доводки в центр цели.
     /// По окончании IsMoving = false.
     /// </summary>
     private System.Collections.IEnumerator MoveAlongPath(List<Vector2Int> path, Vector2Int targetCell)
@@ -195,10 +193,8 @@ public class Unit : MonoBehaviour
             transform.position = waypointPos;
         }
 
-        // Финальная доводка: цель могла совпадать с последней клеткой пути —
-        // тогда Distance == 0 и цикл ниже сразу завершится.
-        Vector3 targetWorldPos = GridManager.Instance.GridToWorld(targetCell);
-        transform.position = targetWorldPos;
+        // Финальная доводка в центр целевой клетки.
+        transform.position = GridManager.Instance.GridToWorld(targetCell);
 
         IsMoving = false;
         moveCoroutine = null;

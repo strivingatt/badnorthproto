@@ -2,12 +2,12 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Поиск пути на сетке (A*). Статический класс — состояния не хранит,
+/// Поиск пути на клеточной сетке (A*). Статический класс — состояния не хранит,
 /// всю информацию о границах и блокировках берёт из GridManager.Instance.
 /// </summary>
 public static class Pathfinding
 {
-    /// <summary>4 соседа (без диагоналей): +X, -X, +Y(мир +Z), -Y(мир -Z).</summary>
+    /// <summary>4 соседа (без диагоналей): +X, -X, +Y(сетка) / мир +Z, -Y / мир -Z.</summary>
     private static readonly Vector2Int[] Neighbors =
     {
         new Vector2Int(1, 0),
@@ -20,21 +20,21 @@ public static class Pathfinding
     /// A* от start до goal по клеткам сетки.
     ///
     /// Проходимость:
-    /// - вне границ или IsBlocked — НЕпроходимо;
+    /// - клетка вне границ или IsBlocked — НЕпроходима;
     /// - клетки, занятые юнитами, проходимы как ПРОМЕЖУТОЧНЫЕ (юниты успеют
-    ///   уйти к моменту прибытия);
-    /// - клетка goal проходима независимо от занятости — она наша по резервации
-    ///   в Squad.CommandFormation.
+    ///   уйти с пути к моменту нашего прибытия);
+    /// - клетка goal проходима независимо от занятости — она наша по
+    ///   резервации в Squad.CommandFormation.
     ///
     /// Возвращает путь ОТ клетки ПОСЛЕ start ДО goal включительно
-    /// (start в список не входит). Если пути нет — null.
-    /// Если start == goal — пустой список (двигаться некуда, цель уже достигнута).
+    /// (сам start в список не входит). Если пути нет — null.
+    /// Если start == goal — пустой список (цель уже достигнута).
     ///
-    /// Реализация очереди с приоритетом: выбрана простая List + линейный поиск
-    /// минимума f вместо SortedSet/heap — это самое простое решение, а для
-    /// прототипа (сетка ~24x24 = 576 клеток) O(n) на извлечение полностью
-    /// достаточно; у SortedSet к тому же проблемы с дубликатами ключей
-    /// (одинаковые f для разных узлов требуют дополнительных tie-breaker'ов).
+    /// Очередь с приоритетом: выбрана простая List + линейный поиск минимума f
+    /// (а не SortedSet) — это самое простое решение: для прототипа
+    /// (сетка 24x24 = 576 клеток) O(n) на извлечение полностью достаточен,
+    /// а у SortedSet одинаковые f у разных узлов требуют дополнительных
+    /// tie-breaker'ов, чтобы словарь не «сливал» дубликаты ключей.
     /// </summary>
     public static List<Vector2Int> AStar(Vector2Int start, Vector2Int goal)
     {
@@ -46,7 +46,7 @@ public static class Pathfinding
             return null;
         }
 
-        // Цель недостижима, если она вообще вне границ.
+        // Цель недостижима, если она вообще вне границ поля.
         if (!gm.InBounds(goal))
         {
             return null;
@@ -58,9 +58,9 @@ public static class Pathfinding
             return new List<Vector2Int>();
         }
 
-        var openList = new List<Vector2Int>();               // очередь с приоритетом (простая)
-        var cameFrom = new Dictionary<Vector2Int, Vector2Int>();
-        var gScore = new Dictionary<Vector2Int, float>();
+        var openList = new List<Vector2Int>();                    // очередь с приоритетом (простая List)
+        var cameFrom = new Dictionary<Vector2Int, Vector2Int>();  // восстановление пути
+        var gScore = new Dictionary<Vector2Int, float>();         // стоимость от start до узла
 
         gScore[start] = 0f;
         openList.Add(start);
@@ -127,8 +127,8 @@ public static class Pathfinding
 
     /// <summary>
     /// Проходимость клетки: вне границ или заблокирована — false.
-    /// Занятые юнитами клетки проходимы как промежуточные; goal проходима
-    /// всегда (зарезервирована нами).
+    /// Занятые юнитами клетки проходимы как промежуточные;
+    /// goal проходима всегда (зарезервирована нами в CommandFormation).
     /// </summary>
     private static bool IsPassable(Vector2Int cell, Vector2Int goal)
     {
@@ -149,13 +149,13 @@ public static class Pathfinding
             return false;
         }
 
-        // Оккупация юнитом НЕ блокирует проход (юниты уйдут с пути).
+        // Оккупация юнитом НЕ блокирует проход — юниты уйдут с пути.
         return true;
     }
 
     /// <summary>
-    /// Восстановление пути из cameFrom. Возвращает клетки ОТ первой после start
-    /// ДО goal включительно (сам start исключается).
+    /// Восстановление пути из cameFrom: клетки ОТ первой после start
+    /// ДО goal включительно (сам start исключается — его в cameFrom нет).
     /// </summary>
     private static List<Vector2Int> BuildPath(Dictionary<Vector2Int, Vector2Int> cameFrom, Vector2Int goal)
     {

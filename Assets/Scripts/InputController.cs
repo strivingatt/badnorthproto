@@ -6,7 +6,9 @@ using UnityEngine;
 /// Рейкаст луча из мыши на математическую плоскость y = 0, определение клетки под курсором.
 /// Машина состояний: Idle -> Selected (ЛКМ по юниту) -> Dragging (ЛКМ по любой клетке при выделенном отряде).
 /// Выделение и drag — РАЗДЕЛЬНЫЕ действия: клик только выделяет, повторное нажатие ЛКМ начинает drag.
+/// При отпускании ЛКМ отдается команда перестроения (Squad.CommandFormation).
 /// Синглтон — доступ через InputController.Instance. Клавиша T — самотест Formation.SelfTest().
+/// Режим камней (зажатая B) перехвачен ObstaclePlacer — обычный ввод в это время отключён.
 /// </summary>
 public class InputController : MonoBehaviour
 {
@@ -106,8 +108,9 @@ public class InputController : MonoBehaviour
 
     private void Update()
     {
-        // Режим размещения камней (зажатая B): весь обычный ввод (выделение,
-        // drag формации) приостановлен — обрабатывает ObstaclePlacer.
+        // ПЕРВОЙ СТРОКОЙ: режим размещения камней (зажатая B) — весь обычный
+        // ввод (выделение, drag формации) приостановлен; клики обрабатывает
+        // ObstaclePlacer. Это простое разрешение конфликта ввода.
         if (Input.GetKey(KeyCode.B))
         {
             return;
@@ -135,6 +138,7 @@ public class InputController : MonoBehaviour
                     preview.Hide();
                 }
 
+                lastSlots = null;
                 state = State.Selected;
                 Debug.Log("[InputController] Drag отменён (ПКМ).");
             }
@@ -163,8 +167,8 @@ public class InputController : MonoBehaviour
             {
                 if (state == State.Selected)
                 {
-                    // Уже есть выделенный отряд: нажатие на ЛЮБУЮ клетку начинает drag.
-                    // DRAG НЕ меняет выделение.
+                    // Уже есть выделенный отряд: нажатие на ЛЮБУЮ клетку
+                    // (пустую или занятую) начинает drag. DRAG НЕ меняет выделение.
                     BeginDrag(cell);
                 }
                 else
@@ -194,7 +198,7 @@ public class InputController : MonoBehaviour
             }
         }
 
-        // --- ЛКМ отпущена: завершаем drag ---
+        // --- ЛКМ отпущена: завершаем drag (команда перестроения) ---
         if (state == State.Dragging && Input.GetMouseButtonUp(0))
         {
             EndDrag();
@@ -202,8 +206,9 @@ public class InputController : MonoBehaviour
     }
 
     /// <summary>
-    /// Рейкаст луча из позиции мыши на плоскость y = 0 и перевод в клетку сетки,
-    /// ограниченную (clamp) границами поля. Возвращает false, если луч не попал в плоскость.
+    /// Рейкаст луча из позиции мыши на плоскость y = 0 (Plane + Ray.Enter)
+    /// и перевод в клетку сетки, ограниченную (clamp) границами поля.
+    /// Возвращает false, если луч не попал в плоскость.
     /// </summary>
     private bool TryGetClampedCellUnderCursor(out Vector2Int cell)
     {
@@ -280,8 +285,9 @@ public class InputController : MonoBehaviour
     }
 
     /// <summary>
-    /// Обновление drag: конец линии = клетка под курсором (уже clamp в TryGetClampedCellUnderCursor),
-    /// слоты пересчитываются каждый кадр, превью обновляется.
+    /// Обновление drag: конец линии = клетка под курсором (уже clamp в
+    /// TryGetClampedCellUnderCursor), слоты пересчитываются каждый кадр через
+    /// Formation.GetLineSlots, превью обновляется.
     /// </summary>
     private void UpdateDrag(Vector2Int endCell)
     {
@@ -306,7 +312,9 @@ public class InputController : MonoBehaviour
 
     /// <summary>
     /// Завершение drag (ЛКМ отпущена): приказ выбранному отряду перестроиться в
-    /// формацию по посчитанным слотам, скрытие превью, возврат в Selected.
+    /// формацию по посчитанным слотам (CommandFormation резервирует клетки и
+    /// запускает движение по A*), скрытие превью, возврат в Selected
+    /// (отряд остаётся выделенным).
     /// </summary>
     private void EndDrag()
     {
