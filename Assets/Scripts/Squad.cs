@@ -107,6 +107,9 @@ public class Squad : MonoBehaviour
 
             unit.GridPos = slot;
             unit.Facing = facing;
+            // Визуализация направления: поворот юнита (локальный +Z вдоль Facing)
+            // сразу после установки Facing — «нос» смотрит туда же, куда строй.
+            unit.ApplyFacing();
             unit.StartMove(slot);
         }
 
