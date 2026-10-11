@@ -2,59 +2,34 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Статические утилиты построения боевых порядков (формаций) на сетке:
-/// линия по Брезенхэму и раскладка слотов «шеренги» (rank-major).
+/// Статические утилиты построения боевых порядков (формаций) на сетке.
+///
+/// Формация — ВСЕГДА ровная полоса клеток: направление перетаскивания
+/// квантуется до одного из 8 секторов (0, 45, 90, ... 315 градусов), поэтому
+/// линия строится простым шагом вдоль целочисленного направления, без Брезенхэма
+/// (иначе диагонали дали бы «рваную лесенку»).
 /// </summary>
 public static class Formation
 {
+    /// <summary>Шаг сектора квантования: 45 градусов в радианах.</summary>
+    private const float SectorRad = Mathf.PI * 0.25f;
+
     /// <summary>
-    /// Классический алгоритм Брезенхэма: список клеток на отрезке [a..b] включительно.
-    /// Если a == b — возвращается список из одной клетки.
+    /// Единичные клеточные векторы для 8 секторов по порядку округления угла
+    /// k = round(angle / 45°): 0°->(1,0), 45°->(1,1), 90°->(0,1), 135°->(-1,1),
+    /// 180°->(-1,0), 225°->(-1,-1), 270°->(0,-1), 315°->(1,-1).
     /// </summary>
-    public static List<Vector2Int> Bresenham(Vector2Int a, Vector2Int b)
+    private static readonly Vector2Int[] Sectors =
     {
-        var cells = new List<Vector2Int>();
-
-        int dx = Mathf.Abs(b.x - a.x);
-        int dy = Mathf.Abs(b.y - a.y);
-        int sx = a.x < b.x ? 1 : -1;
-        int sy = a.y < b.y ? 1 : -1;
-        int err = dx - dy;
-
-        Vector2Int cur = a;
-
-        while (true)
-        {
-            cells.Add(cur);
-
-            if (cur == b)
-            {
-                break;
-            }
-
-            int e2 = 2 * err;
-
-            if (e2 > -dy)
-            {
-                err -= dy;
-                cur.x += sx;
-            }
-
-            if (e2 < dx)
-            {
-                err += dx;
-                cur.y += sy;
-            }
-        }
-
-        return cells;
-    }
-
-    /// <summary>Поэлементный знак числа: -1, 0 или +1.</summary>
-    private static int Sign(int v)
-    {
-        return v < 0 ? -1 : (v > 0 ? 1 : 0);
-    }
+        new Vector2Int(1, 0),   //   0°
+        new Vector2Int(1, 1),   //  45°
+        new Vector2Int(0, 1),   //  90°
+        new Vector2Int(-1, 1),  // 135°
+        new Vector2Int(-1, 0),  // 180°
+        new Vector2Int(-1, -1), // 225°
+        new Vector2Int(0, -1),  // 270°
+        new Vector2Int(1, -1),  // 315°
+    };
 
     /// <summary>Ограничение клетки границами сетки [0, size).</summary>
     private static Vector2Int ClampToGrid(Vector2Int cell)
@@ -75,17 +50,40 @@ public static class Formation
     }
 
     /// <summary>
-    /// Слоты формации «шеренги» от линии start->end для count юнитов.
-    /// Логика:
-    ///  - end заранее clamp в границы сетки;
-    ///  - line = Bresenham(start, end) включая оба конца; если start == end -> line = [start];
-    ///  - в line оставляются только клетки внутри границ;
-    ///  - dir — поэлементный знак (end - start), приведённый к (-1|0|1); если start == end -> dir = (1,0);
-    ///  - facing = перпендикуляр (-dir.y, dir.x);
-    ///  - заполнение ПО ШЕРЕНГАМ (rank-major): rank = 0,1,2,...; для каждой клетки c из line
-    ///    добавляется слот c + (-facing)*rank (шеренга смещается НАЗАД); стоп при наборе count.
-    /// Возвращает ровно count слотов; если из-за выхода за границы клетки кончились —
-    /// возвращает сколько есть и логирует предупреждение.
+    /// Квантование вектора перетаскивания до ближайшего из 8 секторных направлений:
+    /// angle = Atan2(dragVec.y, dragVec.x); сектор k = round(angle / 45°) mod 8.
+    /// Нулевой вектор здесь не обрабатывается — degenerate-случай берёт на себя
+    /// вызывающий код GetLineSlots.
+    /// </summary>
+    private static Vector2Int SnapDirection(Vector2Int dragVec)
+    {
+        float angle = Mathf.Atan2(dragVec.y, dragVec.x);
+        int k = Mathf.RoundToInt(angle / SectorRad);
+        k = ((k % 8) + 8) % 8; // защита от отрицательного остатка (angle < 0)
+        return Sectors[k];
+    }
+
+    /// <summary>
+    /// Слоты формации «шеренги» (line formation) для count юнитов.
+    ///
+    /// Спецификация:
+    ///  1) dragVec = end - start (в клетках). Если dragVec == (0,0): dir = (1,0), len = 1 клетка.
+    ///  2) Направление квантуется до ближайшего из 8 секторов (0,45,...,315°) -> dirSnapped.
+    ///  3) len = число ШАГОВ вдоль dirSnapped: max(1, RoundToInt(Dot(dragVec, normalize(dirSnapped)))).
+    ///     Выбран вариант через Dot с нормализованным dirSnapped, а не (|x|+|y|)/2:
+    ///     Dot даёт точную геометрическую проекцию вектора на направление и одинаково
+    ///     корректно работает и для осевых направлений (проекция = целому смещению),
+    ///     и для диагоналей (проекция = (|x|+|y|)/√2 ≈ 0.707·(|x|+|y|)); формула
+    ///     (|x|+|y|)/2 была бы верна только строго для диагоналей 45°.
+    ///     Количество клеток линии = len + 1 (стартовая клетка включительно):
+    ///     drag (4,0) -> 4 шага -> 5 клеток; drag (3,3) -> 6/√2 ≈ 4.24 -> 4 шага -> 5 клеток
+    ///     (диагональная «ступенька» короче евклидовой клетки — длина в клетках совпадает).
+    ///  4) line = клетки start + dirSnapped * i, i = 0..len; если конец линии вышел за
+    ///     границы — линия укорачивается (clamp всей линии к краю сетки).
+    ///  5) facing = поворот dirSnapped на +90°: (-dir.y, dir.x). Шеренги смещаются НАЗАД:
+    ///     slot = line[i] + (-facing) * rank, заполнение rank-major (ранг за рангом),
+    ///     ровно count слотов; если из-за границ клетки кончились — возвращается
+    ///     сколько есть и логируется Debug.LogWarning.
     /// </summary>
     public static List<Vector2Int> GetLineSlots(Vector2Int start, Vector2Int end, int count, out Vector2Int facing)
     {
@@ -96,52 +94,62 @@ public static class Formation
             return new List<Vector2Int>();
         }
 
-        // end заранее ограничиваем границами сетки.
-        end = ClampToGrid(end);
-
-        // Базовая линия: Брезенхэм, включая оба конца; degenerate-случай — одна клетка.
-        List<Vector2Int> line = (start == end)
-            ? new List<Vector2Int> { start }
-            : Bresenham(start, end);
-
-        // Оставляем в линии только клетки внутри границ.
         var gm = GridManager.Instance;
 
-        if (gm != null)
-        {
-            line.RemoveAll(c => !gm.InBounds(c));
-        }
+        // end заранее ограничиваем границами сетки (п. спецификации).
+        end = ClampToGrid(end);
 
-        // Направление вдоль линии — поэлементный знак разности концов.
+        Vector2Int dragVec = end - start;
+
+        // Шаг 1: degenerate-случай — нет растягивания: dir = (1,0), линия из 1 клетки.
         Vector2Int dir;
+        int steps; // число ШАГОВ вдоль dir; количество клеток линии = steps + 1
 
-        if (start != end)
+        if (dragVec == Vector2Int.zero)
         {
-            dir = new Vector2Int(Sign(end.x - start.x), Sign(end.y - start.y));
+            dir = new Vector2Int(1, 0);
+            steps = 0;
         }
         else
         {
-            dir = new Vector2Int(1, 0);
+            // Шаг 2: квантование направления до 8 секторов.
+            dir = SnapDirection(dragVec);
+
+            // Шаг 3: длина — проекция dragVec на НОРМАЛИЗОВАННЫЙ снапнутый вектор (Dot).
+            // Для осевых dir нормализация результат не меняет, для диагональных
+            // приводит (|x|+|y|) к истинной длине вдоль диагонали:
+            // drag (4,0) -> 4 шага (5 клеток); drag (3,3) -> 6/√2 ≈ 4.24 -> округляется до 4.
+            Vector2 dirNorm = new Vector2(dir.x, dir.y).normalized;
+            float projection = Vector2.Dot(new Vector2(dragVec.x, dragVec.y), dirNorm);
+            steps = Mathf.Max(1, Mathf.RoundToInt(projection));
         }
 
-        // Facing — перпендикуляр к направлению линии.
+        // Шаг 4: clamp всей линии в границы — если конец упирается в край, укорачиваем len.
+        while (steps > 0 && gm != null && !gm.InBounds(start + dir * steps))
+        {
+            steps--;
+        }
+
+        // Шаг 5: facing — поворот dir на +90°; назад = -facing.
         facing = new Vector2Int(-dir.y, dir.x);
+        Vector2Int back = -facing;
 
         var slots = new List<Vector2Int>(count);
 
-        // Заполнение по шеренгам (rank-major): rank = 0, 1, 2, ...
-        int maxRank = count + 1;      // больше count рангов всегда хватает
-        int lineLength = line.Count;
+        // Потолок рангов: дальше всех возможных шеренг заведомо нет ни одной клетки
+        // в границах (координата клетки не может уйти дальше 2*size шагов назад).
+        int maxRank = count + 2 * (gm != null ? gm.size : 64);
 
-        for (int rank = 0; rank < maxRank && slots.Count < count; rank++)
+        // Заполнение ПО ШЕРЕНГАМ (rank-major): rank = 0, 1, 2, ...
+        for (int rank = 0; rank <= maxRank && slots.Count < count; rank++)
         {
-            Vector2Int offset = -facing * rank; // смещение шеренги НАЗАД
+            Vector2Int offset = back * rank; // смещение шеренги НАЗАД
 
-            for (int i = 0; i < lineLength && slots.Count < count; i++)
+            for (int i = 0; i <= steps && slots.Count < count; i++)
             {
-                Vector2Int cell = line[i] + offset;
+                Vector2Int cell = start + dir * i + offset;
 
-                // Пропускаем слоты вне границ — вместо них попробуется следующий.
+                // Пропускаем слоты вне границ — вместо них пойдёт следующий.
                 if (gm != null && !gm.InBounds(cell))
                 {
                     continue;
@@ -154,7 +162,7 @@ public static class Formation
         if (slots.Count < count)
         {
             Debug.LogWarning($"[Formation] GetLineSlots: набрано только {slots.Count} из {count} слотов " +
-                             $"(линия {start}->{end}, клетки закончились из-за границ сетки).");
+                             $"(линия {start}->{end}, dir={dir}, клетки закончились из-за границ сетки).");
         }
 
         return slots;
@@ -178,21 +186,48 @@ public static class Formation
 
         Debug.Log("[Formation.SelfTest] Начало самотеста...");
 
-        // T1: горизонтальная линия 3 клетки, 8 юнитов -> шеренги 3+3+2.
+        // T1: горизонтальная линия 5 клеток (drag на 4 клетки), 8 юнитов
+        // -> шеренги 5+3, facing (0,1).
         TestGetLineSlots(
             "T1",
-            new Vector2Int(5, 5), new Vector2Int(7, 5), 8,
+            new Vector2Int(5, 5), new Vector2Int(9, 5), 8,
             new Vector2Int[]
             {
                 new Vector2Int(5, 5), new Vector2Int(6, 5), new Vector2Int(7, 5),
+                new Vector2Int(8, 5), new Vector2Int(9, 5),
                 new Vector2Int(5, 4), new Vector2Int(6, 4), new Vector2Int(7, 4),
-                new Vector2Int(5, 3), new Vector2Int(6, 3),
             },
             new Vector2Int(0, 1));
 
-        // T2: вырожденная точка, 4 юнита -> колонна назад от (5,5).
+        // T2: диагональ: drag (3,3) -> dir (1,1), проекция 6/√2 ≈ 4.24 -> len 4 шага
+        // (5 клеток в линии), 8 юнитов -> шеренги 5+3 (вторая смещена НАЗАД на
+        // -facing = (1,-1)), facing (-1,1).
         TestGetLineSlots(
             "T2",
+            new Vector2Int(5, 5), new Vector2Int(8, 8), 8,
+            new Vector2Int[]
+            {
+                new Vector2Int(5, 5), new Vector2Int(6, 6), new Vector2Int(7, 7),
+                new Vector2Int(8, 8), new Vector2Int(9, 9),
+                new Vector2Int(6, 4), new Vector2Int(7, 5), new Vector2Int(8, 6),
+            },
+            new Vector2Int(-1, 1));
+
+        // T3: drag (4,1) — угол ~14°, снапится в 0°: dir (1,0), len 4 шага (5 клеток),
+        // 4 юнита -> одна шеренга, facing (0,1).
+        TestGetLineSlots(
+            "T3",
+            new Vector2Int(5, 5), new Vector2Int(9, 6), 4,
+            new Vector2Int[]
+            {
+                new Vector2Int(5, 5), new Vector2Int(6, 5), new Vector2Int(7, 5), new Vector2Int(8, 5),
+            },
+            new Vector2Int(0, 1));
+
+        // T4: точка (без растягивания): dir (1,0), len 1 клетка, 4 юнита
+        // -> 4 шеренги по 1 со смещением НАЗАД (0,-1), facing (0,1).
+        TestGetLineSlots(
+            "T4",
             new Vector2Int(5, 5), new Vector2Int(5, 5), 4,
             new Vector2Int[]
             {
@@ -200,17 +235,6 @@ public static class Formation
                 new Vector2Int(5, 3), new Vector2Int(5, 2),
             },
             new Vector2Int(0, 1));
-
-        // T3: вертикальная линия вверх вдоль края, 4 юнита -> первая шеренга целиком.
-        TestGetLineSlots(
-            "T3",
-            new Vector2Int(0, 0), new Vector2Int(0, 9), 4,
-            new Vector2Int[]
-            {
-                new Vector2Int(0, 0), new Vector2Int(0, 1),
-                new Vector2Int(0, 2), new Vector2Int(0, 3),
-            },
-            new Vector2Int(-1, 0));
 
         Debug.Log("[Formation.SelfTest] Конец самотеста.");
     }

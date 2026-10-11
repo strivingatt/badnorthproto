@@ -105,6 +105,18 @@ public class GridManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Освободить клетку, которую сейчас занимает этот юнит (по его GridPos).
+    /// Удобно при перестроении: не нужно передавать старую клетку явно.
+    /// </summary>
+    public void FreeUnit(Unit unit)
+    {
+        if (unit != null)
+        {
+            Free(unit.GridPos, unit);
+        }
+    }
+
     /// <summary>Вернуть юнита, занимающего клетку (null, если клетка свободна).</summary>
     public Unit GetOccupant(Vector2Int cell)
     {
