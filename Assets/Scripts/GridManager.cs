@@ -105,6 +105,13 @@ public class GridManager : MonoBehaviour
         }
     }
 
+    /// <summary>Вернуть юнита, занимающего клетку (null, если клетка свободна).</summary>
+    public Unit GetOccupant(Vector2Int cell)
+    {
+        occupancy.TryGetValue(cell, out var unit);
+        return unit;
+    }
+
     /// <summary>Заблокирована ли клетка.</summary>
     public bool IsBlocked(Vector2Int cell)
     {
