@@ -44,7 +44,17 @@ public class InputController : MonoBehaviour
 
     private void Update()
     {
-        if (mainCamera == null || GridManager.Instance == null) return;
+        // Режим размещения камней (зажатая B): весь обычный ввод (выделение,
+        // drag формации) приостановлен — обрабатывает ObstaclePlacer.
+        if (Input.GetKey(KeyCode.B))
+        {
+            return;
+        }
+
+        if (mainCamera == null || GridManager.Instance == null)
+        {
+            return;
+        }
 
         if (Input.GetKeyDown(KeyCode.T)) Formation.SelfTest();
 
