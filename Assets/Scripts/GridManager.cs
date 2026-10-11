@@ -149,6 +149,3 @@ public class GridManager : MonoBehaviour
         }
     }
 }
-
-// Заглушка: будет заменена полноценной реализацией позже.
-public class Unit : MonoBehaviour { }
