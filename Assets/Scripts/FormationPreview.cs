@@ -53,12 +53,13 @@ public class FormationPreview : MonoBehaviour
     }
 
     /// <summary>
-    /// Показать плашки по указанным слотам: первые slots.Count плашек активруются
-    /// и позиционируются в центры клеток, остальные скрываются.
+    /// Показать РОВНО slots.Count плашек из пула: они активируются и позиционируются
+    /// в центры клеток при каждом вызове (вызов идемпотентен), остальные прячутся.
+    /// Если слотов больше, чем плашек в пуле — показывается максимум пула с предупреждением.
     /// </summary>
     public void Show(List<Vector2Int> slots)
     {
-        if (GridManager.Instance == null || slots == null)
+        if (GridManager.Instance == null || slots == null || slots.Count == 0)
         {
             Hide();
             return;
