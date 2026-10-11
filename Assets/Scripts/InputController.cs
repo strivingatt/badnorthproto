@@ -2,16 +2,26 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Обрабатывает пользовательский ввод: выбор отряда кликом мыши по сетке.
-/// Рейкаст луча из мыши на математическую плоскость y = 0, определение клетки под курсором,
-/// выделение отряда юнита, находящегося в этой клетке, и подсветка выбранного отряда.
-/// Синглтон — доступ через InputController.Instance.
-/// Drag (перетаскивание отряда): ЛКМ зажато над выбранным отрядом — превью формации «шеренги»
-/// через Formation.GetLineSlots и FormationPreview; ПКМ отменяет drag.
+/// Обрабатывает пользовательский ввод: выделение отряда и растягивание формации.
+/// Рейкаст луча из мыши на математическую плоскость y = 0, определение клетки под курсором.
+/// Машина состояний: Idle -> Selected (ЛКМ по юниту) -> Dragging (ЛКМ по любой клетке при выделенном отряде).
+/// Выделение и drag — РАЗДЕЛЬНЫЕ действия: клик только выделяет, повторное нажатие ЛКМ начинает drag.
+/// Синглтон — доступ через InputController.Instance. Клавиша T — самотест Formation.SelfTest().
 /// </summary>
 public class InputController : MonoBehaviour
 {
     public static InputController Instance { get; private set; }
+
+    /// <summary>Состояния машины ввода.</summary>
+    private enum State
+    {
+        /// <summary>Ничего не выбрано.</summary>
+        Idle,
+        /// <summary>Отряд выбран, ждём начала drag.</summary>
+        Selected,
+        /// <summary>Идёт растягивание формации (ЛКМ зажата).</summary>
+        Dragging,
+    }
 
     [Header("Visuals")]
     [Tooltip("Материал для подсветки выбранного отряда.")]
@@ -30,15 +40,17 @@ public class InputController : MonoBehaviour
     /// <summary>Отряд, выбранный в данный момент (null — ничего не выбрано).</summary>
     public Squad SelectedSquad { get; private set; }
 
+    /// <summary>Текущее состояние машины ввода.</summary>
+    private State state = State.Idle;
+
     /// <summary>Математическая плоскость y = 0 для рейкаста мыши.</summary>
     private readonly Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
 
     private Camera mainCamera;
 
     // Состояние drag.
-    private bool isDragging;
     private Vector2Int dragStartCell;
-    private Vector2Int dragCurrentCell;
+    private Vector2Int dragEndCell;
     private List<Vector2Int> lastSlots;
     private Vector2Int lastFacing;
 
@@ -99,96 +111,113 @@ public class InputController : MonoBehaviour
             return;
         }
 
-        // ПКМ — отмена drag и скрытие превью.
+        // Клавиша T — самотест построения формаций.
+        if (Input.GetKeyDown(KeyCode.T))
+        {
+            Formation.SelfTest();
+        }
+
+        // --- ПКМ ---
         if (Input.GetMouseButtonDown(1))
         {
-            CancelDrag();
+            if (state == State.Dragging)
+            {
+                // Отмена drag: превью скрывается, отряд остаётся выделенным.
+                if (preview != null)
+                {
+                    preview.Hide();
+                }
+
+                state = State.Selected;
+                Debug.Log("[InputController] Drag отменён (ПКМ).");
+            }
+            else if (state == State.Selected)
+            {
+                // Снятие выделения.
+                SetSelection(null);
+                state = State.Idle;
+            }
+
             return;
         }
 
+        // --- ЛКМ нажата ---
         if (Input.GetMouseButtonDown(0))
         {
-            HandleClick();
+            Vector2Int cell;
+            bool ok = TryGetClampedCellUnderCursor(out cell);
 
-            // Клик по уже выбранному отряду — начинаем drag от этой клетки.
-            if (SelectedSquad != null)
+            if (!ok)
             {
-                Vector2Int cell = GetCellUnderCursor(out bool ok);
+                return; // луч не попал в плоскость
+            }
 
-                if (ok)
+            if (state == State.Idle || state == State.Selected)
+            {
+                if (state == State.Selected)
                 {
+                    // Уже есть выделенный отряд: нажатие на ЛЮБУЮ клетку начинает drag.
+                    // DRAG НЕ меняет выделение.
+                    BeginDrag(cell);
+                }
+                else
+                {
+                    // Idle: клик по юниту выделяет его отряд. Drag НЕ начинается,
+                    // превью в этот кадр не создаётся.
                     Unit unit = GridManager.Instance.GetOccupant(cell);
 
-                    if (unit != null && unit.Squad == SelectedSquad)
+                    if (unit != null && unit.Squad != null)
                     {
-                        OnDragStart(cell);
+                        SetSelection(unit.Squad);
+                        state = State.Selected;
                     }
                 }
             }
         }
 
-        // Пока selectedSquad != null и ЛКМ зажата — обновляем превью формации.
-        if (isDragging && Input.GetMouseButton(0))
+        // --- ЛКМ удерживается: обновляем превью ---
+        if (state == State.Dragging && Input.GetMouseButton(0))
         {
-            Vector2Int cell = GetCellUnderCursor(out bool ok);
+            Vector2Int cell;
 
-            if (ok)
+            // Если луч не попал в плоскость — пропускаем кадр.
+            if (TryGetClampedCellUnderCursor(out cell))
             {
-                OnDragUpdate(cell);
+                UpdateDrag(cell);
             }
         }
 
-        // ЛКМ отпустили — завершаем drag.
-        if (isDragging && Input.GetMouseButtonUp(0))
+        // --- ЛКМ отпущена: завершаем drag ---
+        if (state == State.Dragging && Input.GetMouseButtonUp(0))
         {
-            OnDragEnd();
+            EndDrag();
         }
-    }
-
-    /// <summary>Клик ЛКМ: определяем клетку под курсором и выделяем отряд юнита в ней.</summary>
-    private void HandleClick()
-    {
-        if (mainCamera == null || GridManager.Instance == null)
-        {
-            return;
-        }
-
-        Vector2Int cell = GetCellUnderCursor(out bool ok);
-        if (!ok)
-        {
-            return;
-        }
-
-        Unit unit = GridManager.Instance.GetOccupant(cell);
-
-        // Меняем ли мы выделение?
-        Squad newSquad = unit != null ? unit.Squad : null;
-
-        if (newSquad == SelectedSquad)
-        {
-            return; // выделение не изменилось — перекраску не делаем
-        }
-
-        SetSelection(newSquad);
     }
 
     /// <summary>
-    /// Рейкаст луча из позиции мыши на плоскость y = 0.
-    /// Возвращает клетку сетки под курсором; ok = false, если луч не попал в плоскость.
+    /// Рейкаст луча из позиции мыши на плоскость y = 0 и перевод в клетку сетки,
+    /// ограниченную (clamp) границами поля. Возвращает false, если луч не попал в плоскость.
     /// </summary>
-    private Vector2Int GetCellUnderCursor(out bool ok)
+    private bool TryGetClampedCellUnderCursor(out Vector2Int cell)
     {
         Ray ray = mainCamera.ScreenPointToRay(Input.mousePosition);
 
         if (groundPlane.Raycast(ray, out float enter))
         {
             Vector3 hitPoint = ray.GetPoint(enter);
-            ok = true;
-            return GridManager.Instance.WorldToGrid(hitPoint);
+            Vector2Int raw = GridManager.Instance.WorldToGrid(hitPoint);
+            int max = GridManager.Instance.size - 1;
+
+            cell = new Vector2Int(
+                Mathf.Clamp(raw.x, 0, max),
+                Mathf.Clamp(raw.y, 0, max)
+            );
+
+            return true;
         }
 
-        ok = false;
-        return default;
+        cell = default;
+        return false;
     }
 
     /// <summary>
@@ -196,7 +225,6 @@ public class InputController : MonoBehaviour
     /// </summary>
     private void SetSelection(Squad newSquad)
     {
-        // Снимаем подсветку со старого отряда.
         if (SelectedSquad != null)
         {
             ApplyMaterial(SelectedSquad, matUnit);
@@ -204,7 +232,6 @@ public class InputController : MonoBehaviour
 
         SelectedSquad = newSquad;
 
-        // Подсвечиваем новый отряд.
         if (SelectedSquad != null)
         {
             ApplyMaterial(SelectedSquad, matSelected);
@@ -229,34 +256,37 @@ public class InputController : MonoBehaviour
     }
 
     // ------------------------------------------------------------------
-    // Drag выбранного отряда (превью формации):
+    // Drag формации (отдельное действие после выделения):
     // ------------------------------------------------------------------
 
-    /// <summary>Начало перетаскивания: фиксируем стартовую клетку под курсором.</summary>
-    private void OnDragStart(Vector2Int startCell)
+    /// <summary>Начало drag: фиксируем стартовую клетку и сразу показываем превью.</summary>
+    private void BeginDrag(Vector2Int startCell)
     {
-        isDragging = true;
+        state = State.Dragging;
         dragStartCell = startCell;
-        dragCurrentCell = startCell;
+        dragEndCell = startCell;
         lastSlots = null;
         lastFacing = Vector2Int.zero;
+
+        // Сразу пересчитываем и показываем превью (линия нулевой длины).
+        UpdateDrag(startCell);
     }
 
     /// <summary>
-    /// Обновление перетаскивания: каждый кадр пересчитываем слоты формации
-    /// «шеренги» от стартовой клетки до текущей и показываем превью.
+    /// Обновление drag: конец линии = клетка под курсором (уже clamp в TryGetClampedCellUnderCursor),
+    /// слоты пересчитываются каждый кадр, превью обновляется.
     /// </summary>
-    private void OnDragUpdate(Vector2Int currentCell)
+    private void UpdateDrag(Vector2Int endCell)
     {
         if (SelectedSquad == null)
         {
             return;
         }
 
-        dragCurrentCell = currentCell;
+        dragEndCell = endCell;
 
         int count = SelectedSquad.units.Count;
-        List<Vector2Int> slots = Formation.GetLineSlots(dragStartCell, dragCurrentCell, count, out Vector2Int facing);
+        List<Vector2Int> slots = Formation.GetLineSlots(dragStartCell, dragEndCell, count, out Vector2Int facing);
 
         lastSlots = slots;
         lastFacing = facing;
@@ -268,41 +298,21 @@ public class InputController : MonoBehaviour
     }
 
     /// <summary>
-    /// Завершение перетаскивания (ЛКМ отпущена): пока только скрываем превью и логируем слоты.
+    /// Завершение drag (ЛКМ отпущена): лог списка слотов и facing, Hide(), возврат в Selected.
     /// TODO (следующий шаг): валидация целевых клеток и приказ на движение отряду.
     /// </summary>
-    private void OnDragEnd()
+    private void EndDrag()
     {
-        isDragging = false;
-
         if (preview != null)
         {
             preview.Hide();
         }
 
-        Debug.Log($"[InputController] Drag завершён: {dragStartCell} -> {dragCurrentCell}, " +
+        Debug.Log($"[InputController] Drag завершён: {dragStartCell} -> {dragEndCell}, " +
                   $"facing = {lastFacing}, слотов ({(lastSlots != null ? lastSlots.Count : 0)}): " +
                   $"{(lastSlots != null ? string.Join(", ", lastSlots) : "-")}.");
 
         lastSlots = null;
-    }
-
-    /// <summary>Отмена перетаскивания (ПКМ): сбрасываем состояние и скрываем превью.</summary>
-    private void CancelDrag()
-    {
-        if (!isDragging)
-        {
-            return;
-        }
-
-        isDragging = false;
-        lastSlots = null;
-
-        if (preview != null)
-        {
-            preview.Hide();
-        }
-
-        Debug.Log("[InputController] Drag отменён (ПКМ).");
+        state = State.Selected; // отряд остаётся выделенным
     }
 }
