@@ -2,11 +2,12 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Инструмент размещения препятствий: пока зажата клавиша B, клик ЛКМ по клетке
-/// ставит/убирает камень (блокирует/разблокирует клетку в GridManager).
-/// Конфликт с обычным вводом решён в InputController.Update первой строкой:
-/// if (Input.GetKey(KeyCode.B)) return; — пока активен режим камней, выделение
-/// и drag формации не обрабатываются.
+/// Инструмент размещения препятствий («камней»): пока зажата клавиша B,
+/// клик ЛКМ по клетке ставит/убирает камень (блокирует/разблокирует клетку
+/// в GridManager).
+/// Конфликт с обычным вводом решён просто: в InputController.Update первой
+/// строкой стоит if (Input.GetKey(KeyCode.B)) return; — пока активен режим
+/// камней, выделение отряда и drag формации не обрабатываются.
 /// </summary>
 public class ObstaclePlacer : MonoBehaviour
 {
@@ -20,7 +21,7 @@ public class ObstaclePlacer : MonoBehaviour
     /// <summary>Математическая плоскость y = 0 для рейкаста мыши.</summary>
     private readonly Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
 
-    /// <summary>Какие камни стоят в каких клетках (для удаления по toggle).</summary>
+    /// <summary>Какие камни стоят в каких клетках (нужно для удаления при toggle).</summary>
     private readonly Dictionary<Vector2Int, GameObject> rocks = new Dictionary<Vector2Int, GameObject>();
 
     private Camera mainCamera;
@@ -48,12 +49,13 @@ public class ObstaclePlacer : MonoBehaviour
             return;
         }
 
+        // Реагируем только на момент нажатия ЛКМ (не на удержание).
         if (!Input.GetMouseButtonDown(0))
         {
             return;
         }
 
-        // Рейкаст луча из мыши на плоскость y = 0 -> клетка под курсором.
+        // Рейкаст луча из мыши на плоскость y = 0 -> точка попадания -> клетка.
         Ray ray = mainCamera.ScreenPointToRay(Input.mousePosition);
 
         if (!groundPlane.Raycast(ray, out float enter))
@@ -64,7 +66,7 @@ public class ObstaclePlacer : MonoBehaviour
         Vector3 hitPoint = ray.GetPoint(enter);
         Vector2Int cell = GridManager.Instance.WorldToGrid(hitPoint);
 
-        // Клетка вне границ — игнорируем.
+        // Клетка вне границ поля — игнорируем.
         if (!GridManager.Instance.InBounds(cell))
         {
             return;
@@ -77,7 +79,8 @@ public class ObstaclePlacer : MonoBehaviour
             return;
         }
 
-        // Toggle: заблокирована -> убрать камень и разблокировать; иначе поставить.
+        // Toggle: клетка заблокирована -> убрать камень и разблокировать;
+        // иначе -> поставить камень и заблокировать.
         if (GridManager.Instance.IsBlocked(cell))
         {
             if (rocks.TryGetValue(cell, out var rock))
@@ -102,6 +105,7 @@ public class ObstaclePlacer : MonoBehaviour
             rock.name = $"Rock_{cell.x}_{cell.y}";
             rock.transform.localScale = new Vector3(0.9f, 0.9f, 0.9f);
 
+            // Применяем material камню (если назначен) — к первому рендереру в иерархии.
             if (matRock != null)
             {
                 var renderer = rock.GetComponentInChildren<Renderer>();
