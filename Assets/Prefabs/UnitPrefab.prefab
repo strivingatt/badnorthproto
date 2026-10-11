@@ -12,6 +12,7 @@ GameObject:
   - component: {fileID: 5695950647816592492}
   - component: {fileID: 5504359552677486967}
   - component: {fileID: 2511450992989126548}
+  - component: {fileID: 1971106969714242727}
   m_Layer: 0
   m_Name: UnitPrefab
   m_TagString: Untagged
@@ -112,3 +113,20 @@ BoxCollider:
   serializedVersion: 3
   m_Size: {x: 1, y: 1, z: 1}
   m_Center: {x: 0, y: 0, z: 0}
+--- !u!114 &1971106969714242727
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7637037443990846574}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 377140494066d5449bd85a4b05e58173, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Unit
+  GridPos: {x: 0, y: 0}
+  Facing: {x: 0, y: 1}
+  Squad: {fileID: 0}
+  IsMoving: 0
+  moveSpeed: 4
