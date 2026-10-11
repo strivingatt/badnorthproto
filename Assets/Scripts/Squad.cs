@@ -87,6 +87,21 @@ public class Squad : MonoBehaviour
         }
 
         // Проход 2 (часть «Occupy»): резервируем новые клетки и запускаем движение.
+        //
+        // ПОЧЕМУ ПОРЯДОК FreeUnit -> TryOccupy -> GridPos = slot -> StartMove(oldPos, slot)
+        // КРИТИЧЕН (в частности, для исправления бага телепортации):
+        // - FreeUnit (проход 1) ДО TryOccupy гарантирует отсутствие дублей занятых
+        //   клеток и успешную перестановку мест внутри отряда (см. пп.3-5 выше).
+        // - unit.GridPos обновляется ПЕРЕД StartMove, потому что логическое
+        //   состояние (клетка + регистрация в occupancy) должно быть согласовано
+        //   немедленно: пока юнит едет анимацией, сетка уже считает его стоящим
+        //   на новом месте (иначе следующий приказ или другой юнит увидят
+        //   устаревшую GridPos).
+        // - Поэтому в StartMove НЕЛЬЗЯ брать стартовую клетку из unit.GridPos —
+        //   там уже targetCell, и A* строил бы путь «от цели к цели» (пустой
+        //   список), а финальная доводка корутины выглядела бы как телепорт.
+        //   Стартовая клетка передаётся ЯВНО: Vector2Int oldPos = unit.GridPos
+        //   сохраняется ДО обновления, и именно oldPos уходит в StartMove(oldPos, slot).
         foreach (var pair in pairs)
         {
             Unit unit = pair.unit;
@@ -105,12 +120,16 @@ public class Squad : MonoBehaviour
                 continue;
             }
 
+            // Сохраняем СТАРУЮ позицию ДО обновления GridPos — она нужна A* как
+            // стартовая клетка (GridPos после присваивания будет равен slot).
+            Vector2Int oldPos = unit.GridPos;
+
             unit.GridPos = slot;
             unit.Facing = facing;
             // Визуализация направления: поворот юнита (локальный +Z вдоль Facing)
             // сразу после установки Facing — «нос» смотрит туда же, куда строй.
             unit.ApplyFacing();
-            unit.StartMove(slot);
+            unit.StartMove(oldPos, slot);
         }
 
         Debug.Log($"[Squad] CommandFormation: выполнено — пар {pairs.Count}, facing = {facing}.");
