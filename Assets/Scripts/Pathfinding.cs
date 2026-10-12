@@ -2,39 +2,27 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Поиск пути на клеточной сетке (A*). Статический класс — состояния не хранит,
-/// всю информацию о границах и блокировках берёт из GridManager.Instance.
+/// A* по сетке с 8 направлениями (диагонали разрешены).
+/// Единственный источник данных о границах и препятствиях — GridManager.Instance.
+/// Никаких внешних типов карты: проект уже имеет GridManager.
 /// </summary>
 public static class Pathfinding
 {
-    /// <summary>4 соседа (без диагоналей): +X, -X, +Y(сетка) / мир +Z, -Y / мир -Z.</summary>
-    private static readonly Vector2Int[] Neighbors =
+    private const float StraightCost = 1.0f;
+    private const float DiagonalCost = 1.41421356f; // sqrt(2)
+
+    /// <summary>4 ортогональных + 4 диагональных направления.</summary>
+    private static readonly Vector2Int[] Dirs =
     {
-        new Vector2Int(1, 0),
-        new Vector2Int(-1, 0),
-        new Vector2Int(0, 1),
-        new Vector2Int(0, -1),
+        new Vector2Int(1, 0),  new Vector2Int(-1, 0), new Vector2Int(0, 1),  new Vector2Int(0, -1),
+        new Vector2Int(1, 1),  new Vector2Int(1, -1), new Vector2Int(-1, 1), new Vector2Int(-1, -1),
     };
 
     /// <summary>
-    /// A* от start до goal по клеткам сетки.
-    ///
-    /// Проходимость:
-    /// - клетка вне границ или IsBlocked — НЕпроходима;
-    /// - клетки, занятые юнитами, проходимы как ПРОМЕЖУТОЧНЫЕ (юниты успеют
-    ///   уйти с пути к моменту нашего прибытия);
-    /// - клетка goal проходима независимо от занятости — она наша по
-    ///   резервации в Squad.CommandFormation.
-    ///
-    /// Возвращает путь ОТ клетки ПОСЛЕ start ДО goal включительно
-    /// (сам start в список не входит). Если пути нет — null.
-    /// Если start == goal — пустой список (цель уже достигнута).
-    ///
-    /// Очередь с приоритетом: выбрана простая List + линейный поиск минимума f
-    /// (а не SortedSet) — это самое простое решение: для прототипа
-    /// (сетка 24x24 = 576 клеток) O(n) на извлечение полностью достаточен,
-    /// а у SortedSet одинаковые f у разных узлов требуют дополнительных
-    /// tie-breaker'ов, чтобы словарь не «сливал» дубликаты ключей.
+    /// Путь ОТ клетки после start ДО goal включительно; null если пути нет;
+    /// пустой список, если start == goal (юнит уже на месте).
+    /// Занятые юнитами клетки проходимы (юниты убегут к моменту прибытия),
+    /// заблокированные (камни) — нет.
     /// </summary>
     public static List<Vector2Int> AStar(Vector2Int start, Vector2Int goal)
     {
@@ -42,38 +30,34 @@ public static class Pathfinding
 
         if (gm == null)
         {
-            Debug.LogError("[Pathfinding] GridManager.Instance == null — поиск пути невозможен.");
+            Debug.LogError("[Pathfinding] GridManager.Instance == null.");
             return null;
         }
 
-        // Цель недостижима, если она вообще вне границ поля.
-        if (!gm.InBounds(goal))
+        if (!gm.InBounds(start) || !gm.InBounds(goal) || gm.IsBlocked(goal))
         {
             return null;
         }
 
-        // Уже на месте — путь не нужен.
         if (start == goal)
         {
             return new List<Vector2Int>();
         }
 
-        var openList = new List<Vector2Int>();                    // очередь с приоритетом (простая List)
-        var cameFrom = new Dictionary<Vector2Int, Vector2Int>();  // восстановление пути
-        var gScore = new Dictionary<Vector2Int, float>();         // стоимость от start до узла
+        var open = new List<Vector2Int> { start };
+        var closed = new HashSet<Vector2Int>();
+        var cameFrom = new Dictionary<Vector2Int, Vector2Int>();
+        var gScore = new Dictionary<Vector2Int, float> { [start] = 0f };
 
-        gScore[start] = 0f;
-        openList.Add(start);
-
-        while (openList.Count > 0)
+        while (open.Count > 0)
         {
-            // Извлекаем узел с минимальным f = g + h (линейный поиск минимума).
+            // Узел с минимальным f = g + h (для 24x24 простой перебор достаточно быстр).
             int bestIndex = 0;
             float bestF = float.MaxValue;
 
-            for (int i = 0; i < openList.Count; i++)
+            for (int i = 0; i < open.Count; i++)
             {
-                float f = gScore[openList[i]] + Heuristic(openList[i], goal);
+                float f = gScore[open[i]] + Heuristic(open[i], goal);
 
                 if (f < bestF)
                 {
@@ -82,93 +66,82 @@ public static class Pathfinding
                 }
             }
 
-            Vector2Int current = openList[bestIndex];
-            openList.RemoveAt(bestIndex);
+            var current = open[bestIndex];
+            open.RemoveAt(bestIndex);
 
             if (current == goal)
             {
-                return BuildPath(cameFrom, goal);
+                return Reconstruct(cameFrom, current);
             }
 
-            for (int n = 0; n < Neighbors.Length; n++)
-            {
-                Vector2Int next = current + Neighbors[n];
+            closed.Add(current);
 
-                if (!IsPassable(next, goal))
+            foreach (var d in Dirs)
+            {
+                var next = current + d;
+
+                if (!gm.InBounds(next) || closed.Contains(next) || gm.IsBlocked(next))
                 {
                     continue;
                 }
 
-                float tentativeG = gScore[current] + 1f;
-
-                if (gScore.TryGetValue(next, out float knownG) && tentativeG >= knownG)
+                // Запрет срезания углов: диагональ проходима, только если обе
+                // соседние ортогональные клетки проходимы (иначе юнит протиснется
+                // по диагонали между двумя камнями).
+                if (d.x != 0 && d.y != 0)
                 {
-                    continue; // этот путь к next не лучше уже найденного
+                    var a = current + new Vector2Int(d.x, 0);
+                    var b = current + new Vector2Int(0, d.y);
+
+                    if (!gm.InBounds(a) || gm.IsBlocked(a) || !gm.InBounds(b) || gm.IsBlocked(b))
+                    {
+                        continue;
+                    }
                 }
 
+                float tentative = gScore[current] + (d.x != 0 && d.y != 0 ? DiagonalCost : StraightCost);
+
+                if (gScore.TryGetValue(next, out float existing))
+                {
+                    if (tentative >= existing)
+                    {
+                        continue;
+                    }
+                }
+                else
+                {
+                    open.Add(next);
+                }
+
+                gScore[next] = tentative;
                 cameFrom[next] = current;
-                gScore[next] = tentativeG;
-
-                if (!openList.Contains(next))
-                {
-                    openList.Add(next);
-                }
             }
         }
 
-        return null; // открытый список опустел — цели не достать
+        return null; // путь не найден
     }
 
-    /// <summary>Эвристика Manhattan (расстояние по 4 направлениям).</summary>
-    private static int Heuristic(Vector2Int a, Vector2Int b)
+    /// <summary>Octile-эвристика: корректна для 8 направлений (Manhattan завышал бы оценку).</summary>
+    private static float Heuristic(Vector2Int a, Vector2Int b)
     {
-        return Mathf.Abs(a.x - b.x) + Mathf.Abs(a.y - b.y);
+        int dx = Mathf.Abs(a.x - b.x);
+        int dy = Mathf.Abs(a.y - b.y);
+        return (dx + dy) + (DiagonalCost - 2f) * Mathf.Min(dx, dy);
     }
 
-    /// <summary>
-    /// Проходимость клетки: вне границ или заблокирована — false.
-    /// Занятые юнитами клетки проходимы как промежуточные;
-    /// goal проходима всегда (зарезервирована нами в CommandFormation).
-    /// </summary>
-    private static bool IsPassable(Vector2Int cell, Vector2Int goal)
+    /// <summary>Восстановление пути: от goal к start, затем разворот и удаление стартовой клетки.</summary>
+    private static List<Vector2Int> Reconstruct(Dictionary<Vector2Int, Vector2Int> cameFrom, Vector2Int current)
     {
-        var gm = GridManager.Instance;
-
-        if (!gm.InBounds(cell))
-        {
-            return false;
-        }
-
-        if (cell == goal)
-        {
-            return true; // цель наша по резервации, даже если формально «занята»
-        }
-
-        if (gm.IsBlocked(cell))
-        {
-            return false;
-        }
-
-        // Оккупация юнитом НЕ блокирует проход — юниты уйдут с пути.
-        return true;
-    }
-
-    /// <summary>
-    /// Восстановление пути из cameFrom: клетки ОТ первой после start
-    /// ДО goal включительно (сам start исключается — его в cameFrom нет).
-    /// </summary>
-    private static List<Vector2Int> BuildPath(Dictionary<Vector2Int, Vector2Int> cameFrom, Vector2Int goal)
-    {
-        var reversed = new List<Vector2Int>();
-        Vector2Int current = goal;
+        var path = new List<Vector2Int> { current };
 
         while (cameFrom.ContainsKey(current))
         {
-            reversed.Add(current);
             current = cameFrom[current];
+            path.Add(current);
         }
 
-        reversed.Reverse();
-        return reversed;
+        path.RemoveAt(path.Count - 1); // убираем start
+        path.Reverse();
+        return path;
     }
 }

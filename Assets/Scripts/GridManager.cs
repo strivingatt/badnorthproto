@@ -176,4 +176,9 @@ public class GridManager : MonoBehaviour
             );
         }
     }
+    public void ForceOccupy(Vector2Int cell, Unit unit)
+    {
+        if (!InBounds(cell)) return;
+        occupancy[cell] = unit;
+    }
 }

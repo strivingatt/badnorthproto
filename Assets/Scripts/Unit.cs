@@ -5,11 +5,9 @@ using UnityEngine;
 /// Юнит на сетке. Хранит логическую позицию, направление взгляда и принадлежность
 /// к отряду. Движение — по клеткам пути A* (обход заблокированных клеток).
 ///
-/// ВАЖНО (уязвимость во время движения, БЕЗ физики): GridPos отражает ФАКТИЧЕСКУЮ
-/// клетку юнита, а не целевую — он обновляется каждый физический шаг (FixedUpdate)
-/// на основе transform.position. Никаких Rigidbody/Collider: вместо физической
-/// коллизии занятая другим юнитом клетка просто не даёт пройти — позиция
-/// откатывается к последней успешно занятой клетке (lastGridPos).
+/// ВАЖНО: юниты НЕ блокируют друг друга. Клетка в occupancy просто
+/// перезаписывается последним вошедшим — юниты проходят сквозь друг друга,
+/// никаких откатов, ожиданий и дёргания.
 /// </summary>
 public class Unit : MonoBehaviour
 {
@@ -196,6 +194,36 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
+    /// Синхронизация логической позиции с фактической (FixedUpdate).
+    ///
+    /// Юниты НЕ блокируют друг друга: юнит всегда занимает ту клетку, куда
+    /// фактически доехал, перезаписывая occupancy. Никаких откатов.
+    ///
+    /// Deadzone 0.4: смена клетки фиксируется только когда юнит подошёл к её
+    /// центру ближе чем на 0.4 (клетка = 1.0, центр = 0.5) — защита от дёрганья
+    /// на границах клеток.
+    /// </summary>
+    private void FixedUpdate()
+    {
+        if (GridManager.Instance == null) return;
+
+        Vector2Int currentCell = GridManager.Instance.WorldToGrid(transform.position);
+
+        // Deadzone: не фиксируем смену клетки, пока юнит не подъехал
+        // достаточно близко к её центру.
+        Vector3 currentWorldPos = GridManager.Instance.GridToWorld(currentCell);
+        float distToCenter = Vector3.Distance(transform.position, currentWorldPos);
+        if (distToCenter > 0.4f) return;
+
+        if (currentCell != GridPos && GridManager.Instance.InBounds(currentCell))
+        {
+            GridManager.Instance.Free(GridPos, this);
+            GridManager.Instance.ForceOccupy(currentCell, this); // перезаписываем, кого там ни было
+            GridPos = currentCell;
+        }
+    }
+
+    /// <summary>
     /// Создать child-объект "Nose" кодом (не префабом): маленький куб
     /// localScale (0.2, 0.2, 0.4), localPosition (0, 0, 0.45) — выступает
     /// вперёд по локальному +Z юнита. Родитель — трансформ юнита.
@@ -203,10 +231,7 @@ public class Unit : MonoBehaviour
     /// </summary>
     private void CreateNose()
     {
-        if (noseTransform != null)
-        {
-            return; // уже создан
-        }
+        if (noseTransform != null) return;
 
         var nose = GameObject.CreatePrimitive(PrimitiveType.Cube);
         nose.name = "Nose";
@@ -222,15 +247,6 @@ public class Unit : MonoBehaviour
     /// вектора Facing в мировых координатах.
     /// Соответствие: Facing (0,1) -> мир +Z; (1,0) -> мир +X; (0,-1) -> мир -Z;
     /// (-1,0) -> мир -X; диагонали -> 45 градусов.
-    ///
-    /// ПОЧЕМУ Atan2(Facing.x, Facing.y), а не Atan2(y, x):
-    /// стандартный atan2(y, x) измеряет угол ОТ мировой оси +X против часовой,
-    /// но в Unity yaw — это угол ВОКРУГ оси Y, отсчитываемый ОТ направления +Z
-    /// к направлению +X. В плоскости (X, Z) «синусной» координатой угла от +Z
-    /// является X, а «косинной» — проекция на Z (у нас ось Y сетки = мир +Z).
-    /// Поэтому аргументы идут как (x, y): Facing=(0,1) даёт 0° (смотреть +Z),
-    /// Facing=(1,0) даёт +90° (yaw к +X). Если бы использовали Atan2(y, x),
-    /// юниты «смотрели» бы на 90° в сторону от реального направления.
     /// </summary>
     public void ApplyFacing()
     {
@@ -262,11 +278,7 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Запустить перемещение юнита из клетки fromCell в целевую клетку targetCell
-    /// ПО ПУТИ A* (обход камней).
-    ///
-    /// Стартовая клетка передаётся ЯВНО параметром fromCell (фактическая позиция
-    /// до приказа) — она же становится точкой отката lastGridPos. GridPos при
-    /// этом НЕ трогается: его ведёт FixedUpdate по фактическому transform.position.
+    /// ПО ПУТИ A* (обход камней). Юниты друг друга не блокируют.
     ///
     /// Если путь не найден — warning «путь недоступен», IsMoving = false,
     /// юнит остаётся на месте.
@@ -279,8 +291,6 @@ public class Unit : MonoBehaviour
             return;
         }
 
-        // Ищем путь через препятствия: start = ФАКТИЧЕСКАЯ стартовая клетка
-        // (fromCell), передаётся явно вызывающей стороной.
         List<Vector2Int> path = Pathfinding.AStar(fromCell, targetCell);
 
         if (path == null)
@@ -291,8 +301,7 @@ public class Unit : MonoBehaviour
             return;
         }
 
-        // Останавливаем предыдущее движение, если оно шло (иначе две корутины
-        // будут бороться за transform.position).
+        // Останавливаем предыдущее движение, если оно шло.
         if (moveCoroutine != null)
         {
             StopCoroutine(moveCoroutine);
@@ -307,12 +316,9 @@ public class Unit : MonoBehaviour
     /// <summary>
     /// Корутина движения ПО КЛЕТКАМ пути: для каждой клетки пути последовательно
     /// MoveTowards к GridToWorld(cell) со скоростью moveSpeed клеток в секунду,
-    /// затем следующая клетка. Изменяется ТОЛЬКО transform.position — rotation
-    /// (взгляд по Facing, «нос») не трогается.
+    /// затем следующая клетка. Изменяется ТОЛЬКО transform.position.
     ///
-    /// GridPos НЕ обновляется здесь — его ведёт FixedUpdate по факту позиции
-    /// трансформа (юнит уязвим в пути; в занятую клетку не пускают — откат).
-    /// По окончании IsMoving = false.
+    /// Юниты не блокируют друг друга — никаких ожиданий и перестроений.
     /// </summary>
     private System.Collections.IEnumerator MoveAlongPath(List<Vector2Int> path, Vector2Int targetCell)
     {
@@ -345,8 +351,7 @@ public class Unit : MonoBehaviour
     private void OnDestroy()
     {
         // При уничтожении освобождаем клетку, чтобы она снова стала доступной.
-        // Free идемпотентен (проверяет occupant == unit): если Die() уже снял
-        // регистрацию — повторный вызов безопасен.
+        // Free идемпотентен (проверяет occupant == unit).
         if (GridManager.Instance != null)
         {
             GridManager.Instance.Free(GridPos, this);
@@ -361,17 +366,10 @@ public class Unit : MonoBehaviour
     /// Зона атаки: 3 клетки перед юнитом («фронт» шириной 3).
     /// right — перпендикуляр Facing «вправо»: right = (Facing.y, -Facing.x).
     /// Клетки: GridPos + Facing*1 + right*r, r = -1..1.
-    ///
-    /// РАСЧЁТ ДЛЯ Facing=(0,1), юнит в (x,y):
-    ///   right = (1, 0);
-    ///   r=-1 -> (x,   y+1)
-    ///   r= 0 -> (x+1, y+1)
-    ///   r=+1 -> (x+2, y+1)
-    /// Три клетки фронта на один шаг «вперёд» по Facing.
     /// </summary>
     public List<Vector2Int> GetAttackCells()
     {
-        Vector2Int right = new Vector2Int(Facing.y, -Facing.x); // перпендикуляр вправо
+        Vector2Int right = new Vector2Int(Facing.y, -Facing.x);
         List<Vector2Int> cells = new List<Vector2Int>();
 
         for (int r = -1; r <= 1; r++)
@@ -385,17 +383,10 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Попытка атаки: наносит attackDamage всем вражеским юнитам в зоне атаки.
-    ///
-    /// ИЗМЕНЕНИЕ (уязвимость в движении): проверка «if (IsMoving) return false»
-    /// УБРАНА — теперь юнит бьёт и двигаясь. Это корректно, потому что GridPos
-    /// reflects ФАКТИЧЕСКУЮ клетку (ведётся в FixedUpdate), а не целевую: атака
-    /// всегда идёт «оттуда, где юнит реально стоит». Так же убрана проверка
-    /// !occupant.IsMoving при выборе целей — движущаяся цель тоже уязвима.
+    /// Юнит бьёт и двигаясь (GridPos = фактическая клетка из FixedUpdate).
     /// </summary>
     public bool TryAttack()
     {
-        // БЕЗ проверки IsMoving: юниты бьют и получают удары в движении
-        // (GridPos = фактическая клетка из FixedUpdate).
         if (cooldownTimer > 0) return false;
 
         var gm = GridManager.Instance;
@@ -408,10 +399,6 @@ public class Unit : MonoBehaviour
             if (!gm.InBounds(cell)) continue;
 
             Unit occupant = gm.GetOccupant(cell);
-            // Исправление бага «бой начинается раньше времени»: проверяем, что
-            // враг активен (gameObject != null, объект ещё не уничтожен), иначе
-            // мёртвый юнит мог оставаться в клетке до конца кадра.
-            // Проверка !occupant.IsMoving УБРАНА: движущийся враг уязвим.
             if (occupant != null && occupant.team != this.team && occupant.gameObject != null)
             {
                 targets.Add(occupant);
@@ -433,15 +420,12 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Получить урон: списывает hp, запускает вспышку matHit, при hp<=0 — Die().
-    /// attacker пока используется только для логов (в будущем — килл-статы).
     /// </summary>
     public void TakeDamage(int dmg, Unit attacker)
     {
         hp -= dmg;
         Debug.Log($"[Combat] {name} получил {dmg} урона от {attacker.name} (HP: {hp}/{maxHp})");
 
-        // Перезапускаем вспышку, если старая ещё идёт — иначе эффекты наслаиваются
-        // и материал может остаться «подсвеченным».
         if (flashCoroutine != null) StopCoroutine(flashCoroutine);
         flashCoroutine = StartCoroutine(Flash());
 
@@ -453,9 +437,7 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Визуальная вспышка получения урона: временно подменяем материал рендерера
-    /// на matHit, через 0.1 сек возвращаем исходный. Если объект уничтожен
-    /// (юнит умер) во время ожидания — проверка this != null защитит от
-    /// обращения к удалённому рендереру.
+    /// на matHit, через 0.1 сек возвращаем исходный.
     /// </summary>
     private System.Collections.IEnumerator Flash()
     {
@@ -467,8 +449,6 @@ public class Unit : MonoBehaviour
 
         yield return new WaitForSeconds(0.1f);
 
-        // this != null — проверка «unity-null»: объект мог быть Destroy'нут
-        // после смерти юнита, тогда возвращать материал уже некому.
         if (this != null && renderer != null)
         {
             renderer.material = original;
@@ -478,8 +458,8 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Смерть юнита: логируем, освобождаем клетку в GridManager (FreeUnit —
-    /// идемпотентен), удаляем себя из состава отряда и Destroy(gameObject).
+    /// Смерть юнита: логируем, освобождаем клетку в GridManager,
+    /// удаляем себя из состава отряда и Destroy(gameObject).
     /// </summary>
     public void Die()
     {
@@ -490,9 +470,6 @@ public class Unit : MonoBehaviour
             GridManager.Instance.FreeUnit(this);
         }
 
-        // Исправление бага MissingReferenceException: удаляем себя из состава
-        // отряда, чтобы Squad не хранил ссылку на уничтожаемый объект — иначе
-        // следующее перестроение (CommandFormation) обратится к мёртвому юниту.
         if (Squad != null)
         {
             Squad.Remove(this);
