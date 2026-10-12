@@ -63,6 +63,9 @@ public class Unit : MonoBehaviour
     /// <summary>Дочерний объект-указатель направления («нос»).</summary>
     private Transform noseTransform;
 
+    /// <summary>Последняя клетка, зафиксированная в occupancy — точка отката, если новая клетка занята.</summary>
+    private Vector2Int lastGridPos;
+
     /// <summary>
     /// Инициализировать юнита: задать позицию и зарезервировать за ним клетку
     /// в GridManager. Если клетка уже занята/недоступна — логируем ошибку и
@@ -97,6 +100,97 @@ public class Unit : MonoBehaviour
 
         // Применяем текущее направление: локальный +Z юнита смотрит вдоль Facing.
         ApplyFacing();
+
+        // Логическая позиция = фактическая: стартуем с клетки спавна.
+        // (Физика не используется — никаких Rigidbody/Collider, защита от
+        // прохода сквозь юнитов держится на откате позиции в FixedUpdate.)
+        lastGridPos = cell;
+
+        // ИИ врагов: если это вражеский юнит — навешиваем EnemyAI кодом
+        // (префаб не трогаем). Компонент сам найдёт и преследует ближайшего
+        // игрока; атаку выполняет CombatResolver тиком TryAttack().
+        if (team == Team.Enemy && GetComponent<EnemyAI>() == null)
+        {
+            gameObject.AddComponent<EnemyAI>();
+        }
+    }
+
+    /// <summary>
+    /// Синхронизация логической позиции с фактической (FixedUpdate).
+    ///
+    /// Смысл: GridPos всегда равен реальной клетке под трансформом. Во время
+    /// движения юнит «переезжает» из клетки в клетку по мере пересечения границ —
+    /// то есть он УЯЗВИМ в пути: стоит в чужой зоне атаки ровно там, где едет.
+    /// Коллизии реализованы ЛОГИЧЕСКИ (без физики): если следующую клетку уже
+    /// занимает другой юнит — вход запрещён и позиция откатывается к центру
+    /// последней успешно занятой клетки (lastGridPos), так что юниты не проходят
+    /// сквозь друг друга.
+    ///
+    /// Deadzone 0.4: смена клетки фиксируется только когда юнит подошёл к её
+    /// центру ближе чем на 0.4 (клетка = 1.0, центр = 0.5) — защита от дёрганья
+    /// на границах клеток.
+    /// </summary>
+    private void FixedUpdate()
+    {
+        if (GridManager.Instance == null)
+        {
+            return;
+        }
+
+        Vector2Int currentCell = GridManager.Instance.WorldToGrid(transform.position);
+
+        // ИСПРАВЛЕНИЕ ДЁРГАНЬЯ НА ГРАНИЦАХ КЛЕТОК (deadzone):
+        // WorldToGrid меняет результат сразу на границе клетки (в 0.5 от центра),
+        // но юнит ещё летит через границу и может «зацепить» соседнюю клетку,
+        // которую занят кто-то другой — откат телепортом назад, снова движение,
+        // снова откат... Визуально это дрожание на стыке клеток. Поэтому, если
+        // юнит физически ещё не дошёл близко к центру текущей клетки
+        // (distToCenter > 0.4), смену позиции НЕ фиксируем — ждём следующего шага.
+        // Deadzone 0.4 (40% клетки): юнит должен быть ближе к центру клетки,
+        // чтобы занять её. Защита от floating-point ошибок на границах.
+        Vector3 currentWorldPos = GridManager.Instance.GridToWorld(currentCell);
+        float distToCenter = Vector3.Distance(transform.position, currentWorldPos);
+
+        if (distToCenter > 0.4f)
+        {
+            return; // Юнит ближе к центру другой клетки — ждём
+        }
+
+        if (currentCell != lastGridPos && GridManager.Instance.InBounds(currentCell))
+        {
+            // Проверяем, не занята ли новая клетка ДРУГИМ юнитом.
+            Unit occupant = GridManager.Instance.GetOccupant(currentCell);
+
+            // occupant == this невозможен, т.к. мы НЕ резервируем клетку заранее
+            // (TryOccupy целевого слота убран из Squad.CommandFormation):
+            // запись в occupancy юнит получает ТОЛЬКО здесь, за свою фактическую
+            // клетку, а она равна lastGridPos — сюда мы попадаем лишь при
+            // currentCell != lastGridPos.
+            if (occupant == null)
+            {
+                // Освобождаем старую клетку (Free сам проверяет occupant == unit,
+                // чужую регистрацию снять не может — дублей не будет).
+                GridManager.Instance.Free(lastGridPos, this);
+
+                // Занимаем новую.
+                if (GridManager.Instance.TryOccupy(currentCell, this))
+                {
+                    GridPos = currentCell;
+                    lastGridPos = currentCell;
+                }
+                else
+                {
+                    // Не удалось занять — откатываем позицию.
+                    transform.position = GridManager.Instance.GridToWorld(lastGridPos);
+                }
+            }
+            else
+            {
+                // Клетка занята другим юнитом — откатываем позицию
+                // (логическая «коллизия»: сквозь товарища не проходим).
+                transform.position = GridManager.Instance.GridToWorld(lastGridPos);
+            }
+        }
     }
 
     /// <summary>
@@ -213,6 +307,9 @@ public class Unit : MonoBehaviour
             StopCoroutine(moveCoroutine);
         }
 
+        // Точка отката при «логической коллизии» = фактическая стартовая клетка приказа.
+        lastGridPos = fromCell;
+
         moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
     }
 
@@ -243,7 +340,8 @@ public class Unit : MonoBehaviour
             }
         }
 
-        // Финальная доводка в центр целевой клетки.
+        // Финальная доводка в центр целевой клетки (только позиция — GridPos
+        // зафиксирует этот центр на следующем шаге FixedUpdate).
         transform.position = GridManager.Instance.GridToWorld(targetCell);
 
         IsMoving = false;
