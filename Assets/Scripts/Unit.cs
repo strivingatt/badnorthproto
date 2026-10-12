@@ -90,6 +90,10 @@ public class Unit : MonoBehaviour
         new Vector2Int(1, -1),
     };
 
+    /// <summary>Кэш оригинального материала рендерера (sharedMaterial), чтобы
+    /// вспышка урона всегда возвращала исходный цвет без создания instance.</summary>
+    private Material originalMaterial;
+
     /// <summary>
     /// Инициализировать юнита: задать позицию и зарезервировать за ним клетку
     /// в GridManager. Если клетка уже занята/недоступна — логируем ошибку и
@@ -125,6 +129,14 @@ public class Unit : MonoBehaviour
 
         // Применяем текущее направление: локальный +Z юнита смотрит вдоль Facing.
         ApplyFacing();
+
+        // Кэшируем оригинальный материал (через sharedMaterial, чтобы не создавать
+        // instance) — точка возврата цвета после вспышки урона.
+        var renderer = GetComponent<Renderer>();
+        if (renderer != null)
+        {
+            originalMaterial = renderer.sharedMaterial;
+        }
 
         // ИИ врагов: если это вражеский юнит — навешиваем EnemyAI кодом
         // (компонент появляется автоматически сразу после регистрации на сетке).
@@ -175,11 +187,12 @@ public class Unit : MonoBehaviour
                 continue;
             }
 
-            int dx = u.GridPos.x - GridPos.x;
-            int dy = u.GridPos.y - GridPos.y;
-            float distSqr = dx * dx + dy * dy;
+            Vector3 myPos = gm.GridToWorld(GridPos);
+            Vector3 theirPos = gm.GridToWorld(u.GridPos);
 
-            if (distSqr < bestDistSqr)
+            float distSqr = (theirPos - myPos).sqrMagnitude;
+
+            if (distSqr <= bestDistSqr)
             {
                 bestDistSqr = distSqr;
                 nearest = u;
@@ -295,6 +308,8 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Сменить материал у рендерера юнита (если он есть).
+    /// Обновляет кэш originalMaterial, чтобы вспышка урона возвращала актуальный
+    /// «родной» цвет (например, после подсветки выделения).
     /// </summary>
     public void SetVisual(Material mat)
     {
@@ -308,6 +323,7 @@ public class Unit : MonoBehaviour
         if (renderer != null)
         {
             renderer.material = mat;
+            originalMaterial = mat;
         }
         else
         {
@@ -399,13 +415,25 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Получить урон: минус HP, вспышка материала, смерть при HP <= 0.
+    /// При цепочке быстрых ударов: ПЕРЕД остановкой старой корутины возвращаем
+    /// оригинальный материал — иначе matHit «застрянет», если новая вспышка
+    /// успеет перезапустить корутину до завершения предыдущей.
     /// </summary>
     public void TakeDamage(int dmg, Unit attacker)
     {
         hp -= dmg;
         Debug.Log($"[Combat] {name} получил {dmg} урона (HP: {hp}/{maxHp})");
 
-        if (flashCoroutine != null) StopCoroutine(flashCoroutine);
+        // Останавливаем предыдущую вспышку и сразу запускаем новую.
+        // Возвращать материал вручную НЕ нужно: Flash() первым же действием
+        // выставит matHit (StartCoroutine выполняется синхронно до первого yield),
+        // поэтому промежуточный restore был бы перезаписан в том же кадре.
+        if (flashCoroutine != null)
+        {
+            StopCoroutine(flashCoroutine);
+            flashCoroutine = null;
+        }
+
         flashCoroutine = StartCoroutine(Flash());
 
         if (hp <= 0)
@@ -413,33 +441,46 @@ public class Unit : MonoBehaviour
             Die();
         }
     }
-
     /// <summary>
     /// Визуальная вспышка «получил урон»: подмена материала на matHit на 0.1 сек.
+    /// Используется WaitForSecondsRealtime — вспышка корректно отрабатывает даже
+    /// при паузе/остановке времени (Time.timeScale = 0).
+    /// Проверка gameObject != null (а не this != null) надёжнее: для уничтоженного
+    /// объекта this может быть «не null» в C#-смысле, но обращение к членам падает.
     /// </summary>
     private IEnumerator Flash()
     {
         var renderer = GetComponent<Renderer>();
-        if (renderer == null) yield break;
+        if (renderer == null || matHit == null || originalMaterial == null)
+            yield break;
 
-        Material original = renderer.material;
         renderer.material = matHit;
-        yield return new WaitForSeconds(0.1f);
+        yield return new WaitForSecondsRealtime(0.1f);
 
-        if (this != null && renderer != null)
+        if (gameObject != null && renderer != null && originalMaterial != null)
         {
-            renderer.material = original;
+            renderer.material = originalMaterial;
         }
 
         flashCoroutine = null;
     }
 
     /// <summary>
-    /// Смерть юнита: освободить клетку, убрать себя из отряда, уничтожить объект.
+    /// Смерть юнита: остановить вспышку (вернув оригинальный цвет), освободить
+    /// клетку, убрать себя из отряда, уничтожить объект.
     /// </summary>
     public void Die()
     {
         Debug.Log($"[Combat] {name} погиб");
+
+        // Останавливаем корутину вспышки до уничтожения объекта, чтобы она
+        // не пыталась обратиться к уничтожаемому рендереру после Destroy().
+        // Материал НЕ восстанавливаем: объект уничтожается следующим Destroy().
+        if (flashCoroutine != null)
+        {
+            StopCoroutine(flashCoroutine);
+            flashCoroutine = null;
+        }
 
         if (GridManager.Instance != null)
         {

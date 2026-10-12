@@ -149,7 +149,7 @@ public class ObstaclePlacer : MonoBehaviour
 
         var rock = Instantiate(rockPrefab, worldPos, Quaternion.identity);
         rock.name = $"Rock_{cell.x}_{cell.y}_{n}x{n}";
-        float scale = n * 0.9f;
+        float scale = n * 1.0f;
         rock.transform.localScale = new Vector3(scale, scale, scale);
 
         // Применяем material камню (если назначен) — к первому рендереру в иерархии.
