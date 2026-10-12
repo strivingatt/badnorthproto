@@ -1,17 +1,14 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
 /// Юнит на сетке. Хранит логическую позицию, направление взгляда и принадлежность
 /// к отряду. Движение — по клеткам пути A* (обход заблокированных клеток).
-///
-/// ВАЖНО: юниты НЕ блокируют друг друга. Клетка в occupancy просто
-/// перезаписывается последним вошедшим — юниты проходят сквозь друг друга,
-/// никаких откатов, ожиданий и дёргания.
 /// </summary>
 public class Unit : MonoBehaviour
 {
-    /// <summary>Индекс клетки сетки, которую юнит занимает ФАКТИЧЕСКИ (обновляется в FixedUpdate).</summary>
+    /// <summary>Индекс клетки сетки, которую занимает юнит.</summary>
     public Vector2Int GridPos;
 
     /// <summary>Направление взгляда (по умолчанию «вперёд» по оси Y сетки = мир +Z).</summary>
@@ -26,35 +23,31 @@ public class Unit : MonoBehaviour
     /// <summary>Скорость перемещения в клетках в секунду (Vector3.MoveTowards по клеткам пути A*).</summary>
     public float moveSpeed = 4f;
 
-    // ------------------------------------------------------------------
-    // Шаг 8: боевая система MVP.
-    // ------------------------------------------------------------------
+    // --- Боевые характеристики (Шаг 8) ---
 
-    /// <summary>Команда юнита (Player/Enemy). Атаки проходят только по чужой команде.</summary>
+    /// <summary>Команда юнита.</summary>
     public Team team = Team.Player;
 
-    /// <summary>Максимальное здоровье (назначается до AddComponent/Instantiate).</summary>
+    /// <summary>Максимальное здоровье.</summary>
     public int maxHp = 3;
 
-    /// <summary>Текущее здоровье. Инициализируется из maxHp в Init().</summary>
+    /// <summary>Текущее здоровье (только чтение извне).</summary>
     private int hp;
-
-    /// <summary>Текущее HP для внешних систем (CombatResolver, UI в будущем).</summary>
     public int Hp => hp;
 
-    /// <summary>Урон одного удара.</summary>
+    /// <summary>Урон одной атаки.</summary>
     public int attackDamage = 1;
 
-    /// <summary>Длительность перезарядки атаки, секунд.</summary>
+    /// <summary>Длительная перезарядки атаки, секунд.</summary>
     public float attackCooldown = 0.8f;
 
-    /// <summary>Оставшееся время перезарядки (тикает CombatResolver).</summary>
+    /// <summary>Оставшееся время до следующей атаки, секунд (тикает CombatResolver).</summary>
     public float cooldownTimer = 0f;
 
-    /// <summary>Материал «вспышки» при получении урона (назначается спавнером).</summary>
+    /// <summary>Материал вспышки при получении урона (назначается спавнером).</summary>
     public Material matHit;
 
-    /// <summary>Активная корутина вспышки (чтобы не наслаивать эффекты).</summary>
+    /// <summary>Активная корутина вспышки «получил урон».</summary>
     private Coroutine flashCoroutine;
 
     /// <summary>Активная корутина движения (чтобы останавливать при повторном приказе).</summary>
@@ -63,8 +56,12 @@ public class Unit : MonoBehaviour
     /// <summary>Дочерний объект-указатель направления («нос»).</summary>
     private Transform noseTransform;
 
-    /// <summary>Последняя клетка, зафиксированная в occupancy — точка отката, если новая клетка занята.</summary>
+    /// <summary>Последняя зафиксированная клетка (для синхронизации GridPos без физики).</summary>
     private Vector2Int lastGridPos;
+
+    /// <summary>«Родной» материал юнита (белый у игроков, красный у врагов):
+    /// запоминается при спавне, восстанавливается после снятия выделения.</summary>
+    private Material defaultMaterial;
 
     /// <summary>
     /// Инициализировать юнита: задать позицию и зарезервировать за ним клетку
@@ -75,8 +72,6 @@ public class Unit : MonoBehaviour
     {
         GridPos = cell;
         Squad = squad;
-
-        // Шаг 8: инициализация боя — hp стартует с максимума.
         hp = maxHp;
 
         if (GridManager.Instance == null)
@@ -94,6 +89,9 @@ public class Unit : MonoBehaviour
         // Позиционируем трансформ в центр клетки.
         transform.position = GridManager.Instance.GridToWorld(cell);
 
+        // Фиксируем стартовую клетку для синхронизации позиции в FixedUpdate.
+        lastGridPos = cell;
+
         // Создаём «нос» child-объектом КОДОМ (не через префаб) — визуальный
         // указатель направления, торчит вперёд по локальному +Z.
         CreateNose();
@@ -101,14 +99,8 @@ public class Unit : MonoBehaviour
         // Применяем текущее направление: локальный +Z юнита смотрит вдоль Facing.
         ApplyFacing();
 
-        // Логическая позиция = фактическая: стартуем с клетки спавна.
-        // (Физика не используется — никаких Rigidbody/Collider, защита от
-        // прохода сквозь юнитов держится на откате позиции в FixedUpdate.)
-        lastGridPos = cell;
-
         // ИИ врагов: если это вражеский юнит — навешиваем EnemyAI кодом
-        // (префаб не трогаем). Компонент сам найдёт и преследует ближайшего
-        // игрока; атаку выполняет CombatResolver тиком TryAttack().
+        // (компонент появляется автоматически сразу после регистрации на сетке).
         if (team == Team.Enemy && GetComponent<EnemyAI>() == null)
         {
             gameObject.AddComponent<EnemyAI>();
@@ -116,14 +108,10 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Синхронизация логической позиции с фактической (FixedUpdate).
-    ///
-    /// Юниты НЕ блокируют друг друга: юнит всегда занимает ту клетку, куда
-    /// фактически доехал, перезаписывая occupancy. Никаких откатов.
-    ///
-    /// Deadzone 0.4: смена клетки фиксируется только когда юнит подошёл к её
-    /// центру ближе чем на 0.4 (клетка = 1.0, центр = 0.5) — защита от дёрганья
-    /// на границах клеток.
+    /// Синхронизация логической позиции с фактической (БЕЗ физики): каждый
+    /// FixedUpdate читаем клетку под transform.position и, если юнит вошёл в
+    /// новую клетку, обновляем GridPos и occupancy. Занятая чужим юнитом клетка
+    /// — логическая коллизия: позиция откатывается к последней зафиксированной.
     /// </summary>
     private void FixedUpdate()
     {
@@ -153,7 +141,10 @@ public class Unit : MonoBehaviour
     /// </summary>
     private void CreateNose()
     {
-        if (noseTransform != null) return;
+        if (noseTransform != null)
+        {
+            return; // уже создан
+        }
 
         var nose = GameObject.CreatePrimitive(PrimitiveType.Cube);
         nose.name = "Nose";
@@ -169,6 +160,12 @@ public class Unit : MonoBehaviour
     /// вектора Facing в мировых координатах.
     /// Соответствие: Facing (0,1) -> мир +Z; (1,0) -> мир +X; (0,-1) -> мир -Z;
     /// (-1,0) -> мир -X; диагонали -> 45 градусов.
+    ///
+    /// ПОЧЕМУ Atan2(Facing.x, Facing.y), а не Atan2(y, x):
+    /// стандартный atan2(y, x) измеряет угол ОТ мировой оси +X против часовой,
+    /// но в Unity yaw — это угол ВОКРУГ оси Y, отсчитываемый ОТ направления +Z
+    /// к направлению +X. Поэтому роль «синусной» координаты играет X, а
+    /// «косинной» — Z. Atan2(y, x) дал бы разворот на 90° относительно нужного.
     /// </summary>
     public void ApplyFacing()
     {
@@ -199,11 +196,148 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Запустить перемещение юнита из клетки fromCell в целевую клетку targetCell
-    /// ПО ПУТИ A* (обход камней). Юниты друг друга не блокируют.
+    /// Назначить «родной» материал юнита и сразу применить его.
+    /// Вызывается при спавне (SquadSpawner) вместо SetVisual — чтобы юнит
+    /// помнил свой исходный цвет и мог восстановить его после снятия выделения.
+    /// </summary>
+    public void SetDefaultVisual(Material mat)
+    {
+        defaultMaterial = mat;
+        SetVisual(mat);
+    }
+
+    /// <summary>
+    /// Восстановить «родной» материал (снять подсветку выделения).
+    /// Если родной материал не задан — ничего не делаем.
+    /// </summary>
+    public void RestoreDefaultVisual()
+    {
+        if (defaultMaterial != null)
+        {
+            SetVisual(defaultMaterial);
+        }
+    }
+
+    /// <summary>
+    /// Клетки зоны атаки: 3 клетки фронта прямо перед юнитом
+    /// (центр — GridPos + Facing, плюс ±1 по перпендикуляру «вправо»).
     ///
-    /// Если путь не найден — warning «путь недоступен», IsMoving = false,
-    /// юнит остаётся на месте.
+    /// Пример расчёта для Facing=(0,1): right = (Facing.y, -Facing.x) = (1,0);
+    /// клетки: (x+1,y-1), (x+1,y), (x+1,y+1) — столбец前方 на y+1 шириной 3.
+    /// </summary>
+    public List<Vector2Int> GetAttackCells()
+    {
+        Vector2Int right = new Vector2Int(Facing.y, -Facing.x); // перпендикуляр вправо
+        List<Vector2Int> cells = new List<Vector2Int>();
+
+        for (int r = -1; r <= 1; r++)
+        {
+            Vector2Int cell = GridPos + Facing * 1 + right * r;
+            cells.Add(cell);
+        }
+
+        return cells;
+    }
+
+    /// <summary>
+    /// Попытка атаки: цели — активные враги команды в зоне атаки.
+    /// Кулдаун запускается только при наличии целей.
+    /// </summary>
+    public bool TryAttack()
+    {
+        var gm = GridManager.Instance;
+        if (gm == null) return false;
+
+        List<Unit> targets = new List<Unit>();
+
+        foreach (Vector2Int cell in GetAttackCells())
+        {
+            if (!gm.InBounds(cell)) continue;
+
+            Unit occupant = gm.GetOccupant(cell);
+
+            // Проверяем, что враг активен (not destroyed) — иначе мёртвый юнит
+            // мог формально оставаться в клетке.
+            if (occupant != null && occupant.team != this.team && occupant.gameObject != null)
+            {
+                targets.Add(occupant);
+            }
+        }
+
+        if (targets.Count == 0) return false;
+
+        cooldownTimer = attackCooldown;
+        Debug.Log($"[Combat] {name} бьёт {targets.Count} целей на {attackDamage} урона");
+
+        foreach (var target in targets)
+        {
+            target.TakeDamage(attackDamage, this);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Получить урон: минус HP, вспышка материала, смерть при HP <= 0.
+    /// </summary>
+    public void TakeDamage(int dmg, Unit attacker)
+    {
+        hp -= dmg;
+        Debug.Log($"[Combat] {name} получил {dmg} урона (HP: {hp}/{maxHp})");
+
+        if (flashCoroutine != null) StopCoroutine(flashCoroutine);
+        flashCoroutine = StartCoroutine(Flash());
+
+        if (hp <= 0)
+        {
+            Die();
+        }
+    }
+
+    /// <summary>
+    /// Визуальная вспышка «получил урон»: подмена материала на matHit на 0.1 сек.
+    /// </summary>
+    private IEnumerator Flash()
+    {
+        var renderer = GetComponent<Renderer>();
+        if (renderer == null) yield break;
+
+        Material original = renderer.material;
+        renderer.material = matHit;
+        yield return new WaitForSeconds(0.1f);
+
+        if (this != null && renderer != null)
+        {
+            renderer.material = original;
+        }
+
+        flashCoroutine = null;
+    }
+
+    /// <summary>
+    /// Смерть юнита: освободить клетку, убрать себя из отряда, уничтожить объект.
+    /// </summary>
+    public void Die()
+    {
+        Debug.Log($"[Combat] {name} погиб");
+
+        if (GridManager.Instance != null)
+        {
+            GridManager.Instance.FreeUnit(this);
+        }
+
+        if (Squad != null)
+        {
+            Squad.Remove(this);
+        }
+
+        Destroy(gameObject);
+    }
+
+    /// <summary>
+    /// Запустить перемещение юнита из клетки fromCell в целевую клетку targetCell
+    /// ПО ПУТИ A* (обход камней). Стартовая клетка передаётся ЯВНО: GridPos уже
+    /// может быть равен targetCell (резервирование), брать его как старт нельзя.
     /// </summary>
     public void StartMove(Vector2Int fromCell, Vector2Int targetCell)
     {
@@ -229,18 +363,16 @@ public class Unit : MonoBehaviour
             StopCoroutine(moveCoroutine);
         }
 
-        // Точка отката при «логической коллизии» = фактическая стартовая клетка приказа.
+        // Фиксируем реальную стартовую клетку для синхронизации в FixedUpdate.
         lastGridPos = fromCell;
 
         moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
     }
 
     /// <summary>
-    /// Корутина движения ПО КЛЕТКАМ пути: для каждой клетки пути последовательно
-    /// MoveTowards к GridToWorld(cell) со скоростью moveSpeed клеток в секунду,
-    /// затем следующая клетка. Изменяется ТОЛЬКО transform.position.
-    ///
-    /// Юниты не блокируют друг друга — никаких ожиданий и перестроений.
+    /// Корутина движения ПО КЛЕТКАМ пути: MoveTowards к центру каждой клетки
+    /// пути со скоростью moveSpeed. Изменяется ТОЛЬКО transform.position —
+    /// rotation (Facing, «нос») не трогается. GridPos ведёт FixedUpdate.
     /// </summary>
     private System.Collections.IEnumerator MoveAlongPath(List<Vector2Int> path, Vector2Int targetCell)
     {
@@ -262,8 +394,7 @@ public class Unit : MonoBehaviour
             }
         }
 
-        // Финальная доводка в центр целевой клетки (только позиция — GridPos
-        // зафиксирует этот центр на следующем шаге FixedUpdate).
+        // Финальная доводка в центр целевой клетки.
         transform.position = GridManager.Instance.GridToWorld(targetCell);
 
         IsMoving = false;
@@ -273,130 +404,9 @@ public class Unit : MonoBehaviour
     private void OnDestroy()
     {
         // При уничтожении освобождаем клетку, чтобы она снова стала доступной.
-        // Free идемпотентен (проверяет occupant == unit).
         if (GridManager.Instance != null)
         {
             GridManager.Instance.Free(GridPos, this);
         }
-    }
-
-    // ------------------------------------------------------------------
-    // Шаг 8: боевая система MVP — зона атаки, удары, урон, вспышка, смерть.
-    // ------------------------------------------------------------------
-
-    /// <summary>
-    /// Зона атаки: 3 клетки перед юнитом («фронт» шириной 3).
-    /// right — перпендикуляр Facing «вправо»: right = (Facing.y, -Facing.x).
-    /// Клетки: GridPos + Facing*1 + right*r, r = -1..1.
-    /// </summary>
-    public List<Vector2Int> GetAttackCells()
-    {
-        Vector2Int right = new Vector2Int(Facing.y, -Facing.x);
-        List<Vector2Int> cells = new List<Vector2Int>();
-
-        for (int r = -1; r <= 1; r++)
-        {
-            Vector2Int cell = GridPos + Facing * 1 + right * r;
-            cells.Add(cell);
-        }
-
-        return cells;
-    }
-
-    /// <summary>
-    /// Попытка атаки: наносит attackDamage всем вражеским юнитам в зоне атаки.
-    /// Юнит бьёт и двигаясь (GridPos = фактическая клетка из FixedUpdate).
-    /// </summary>
-    public bool TryAttack()
-    {
-        if (cooldownTimer > 0) return false;
-
-        var gm = GridManager.Instance;
-        if (gm == null) return false;
-
-        List<Unit> targets = new List<Unit>();
-
-        foreach (Vector2Int cell in GetAttackCells())
-        {
-            if (!gm.InBounds(cell)) continue;
-
-            Unit occupant = gm.GetOccupant(cell);
-            if (occupant != null && occupant.team != this.team && occupant.gameObject != null)
-            {
-                targets.Add(occupant);
-            }
-        }
-
-        if (targets.Count == 0) return false;
-
-        cooldownTimer = attackCooldown;
-        Debug.Log($"[Combat] {name} бьёт {targets.Count} целей на {attackDamage} урона");
-
-        foreach (var target in targets)
-        {
-            target.TakeDamage(attackDamage, this);
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Получить урон: списывает hp, запускает вспышку matHit, при hp<=0 — Die().
-    /// </summary>
-    public void TakeDamage(int dmg, Unit attacker)
-    {
-        hp -= dmg;
-        Debug.Log($"[Combat] {name} получил {dmg} урона от {attacker.name} (HP: {hp}/{maxHp})");
-
-        if (flashCoroutine != null) StopCoroutine(flashCoroutine);
-        flashCoroutine = StartCoroutine(Flash());
-
-        if (hp <= 0)
-        {
-            Die();
-        }
-    }
-
-    /// <summary>
-    /// Визуальная вспышка получения урона: временно подменяем материал рендерера
-    /// на matHit, через 0.1 сек возвращаем исходный.
-    /// </summary>
-    private System.Collections.IEnumerator Flash()
-    {
-        var renderer = GetComponent<Renderer>();
-        if (renderer == null || matHit == null) yield break;
-
-        Material original = renderer.material;
-        renderer.material = matHit;
-
-        yield return new WaitForSeconds(0.1f);
-
-        if (this != null && renderer != null)
-        {
-            renderer.material = original;
-        }
-
-        flashCoroutine = null;
-    }
-
-    /// <summary>
-    /// Смерть юнита: логируем, освобождаем клетку в GridManager,
-    /// удаляем себя из состава отряда и Destroy(gameObject).
-    /// </summary>
-    public void Die()
-    {
-        Debug.Log($"[Combat] {name} погиб");
-
-        if (GridManager.Instance != null)
-        {
-            GridManager.Instance.FreeUnit(this);
-        }
-
-        if (Squad != null)
-        {
-            Squad.Remove(this);
-        }
-
-        Destroy(gameObject);
     }
 }

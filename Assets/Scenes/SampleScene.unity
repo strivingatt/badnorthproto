@@ -340,6 +340,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 1741955880}
   - {fileID: 1186794681}
   - {fileID: 1988891258}
   - {fileID: 1135970902}
@@ -563,6 +564,7 @@ MonoBehaviour:
   matSelected: {fileID: 2100000, guid: ed079f68c41547b4f8919a2bb4d5f9fc, type: 2}
   matUnit: {fileID: 2100000, guid: 18b13219ddad2fa47a55902ae7ce5774, type: 2}
   spawner: {fileID: 0}
+  gridRenderer: {fileID: 1741955879}
   preview: {fileID: 1135970901}
 --- !u!4 &1239838682
 Transform:
@@ -574,6 +576,53 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: 7.14507, y: 0, z: 5.3477297}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 954305207}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1741955878
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1741955880}
+  - component: {fileID: 1741955879}
+  m_Layer: 0
+  m_Name: GridRender
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1741955879
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1741955878}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b8963fb979a68744bb418e9ba4018dc6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GridRenderer
+  lineMaterial: {fileID: 2100000, guid: ada4a88a0a8af8d4f95c8e818bca6829, type: 2}
+  lineColor: {r: 0.8113208, g: 0.8113208, b: 0.8113208, a: 0.4627451}
+  visible: 0
+--- !u!4 &1741955880
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1741955878}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 12.9861, y: 0, z: 12.25146}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
