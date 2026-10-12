@@ -63,6 +63,33 @@ public class Unit : MonoBehaviour
     /// запоминается при спавне, восстанавливается после снятия выделения.</summary>
     private Material defaultMaterial;
 
+    // --- Авто-поворот к ближайшему врагу ---
+
+    /// <summary>Радиус обнаружения врагов для авто-поворота, в клетках.</summary>
+    public float detectionRange = 10f;
+
+    /// <summary>Таймер пересчёта направления взгляда.</summary>
+    private float facingUpdateTimer = 0f;
+
+    /// <summary>Интервал пересчёта направления, секунд (не каждый кадр).</summary>
+    private const float FacingUpdateInterval = 0.2f;
+
+    /// <summary>
+    /// Таблица 8 секторов направлений (тот же порядок, что в Formation.cs):
+    /// индекс 0 = Восток (+X), далее против часовой: NE, N(+Y), NW, W, SW, S, SE.
+    /// </summary>
+    private static readonly Vector2Int[] Sectors =
+    {
+        new Vector2Int(1, 0),
+        new Vector2Int(1, 1),
+        new Vector2Int(0, 1),
+        new Vector2Int(-1, 1),
+        new Vector2Int(-1, 0),
+        new Vector2Int(-1, -1),
+        new Vector2Int(0, -1),
+        new Vector2Int(1, -1),
+    };
+
     /// <summary>
     /// Инициализировать юнита: задать позицию и зарезервировать за ним клетку
     /// в GridManager. Если клетка уже занята/недоступна — логируем ошибку и
@@ -104,6 +131,99 @@ public class Unit : MonoBehaviour
         if (team == Team.Enemy && GetComponent<EnemyAI>() == null)
         {
             gameObject.AddComponent<EnemyAI>();
+        }
+    }
+
+    private void Update()
+    {
+        // Авто-поворот: пересчёт направления не каждый кадр, а с интервалом 0.2с.
+        facingUpdateTimer += Time.deltaTime;
+
+        if (facingUpdateTimer >= FacingUpdateInterval)
+        {
+            facingUpdateTimer = 0f;
+            UpdateFacing();
+        }
+    }
+
+    /// <summary>
+    /// Найти ближайшего живого врага (team != this.team) в радиусе detectionRange.
+    /// Расстояние считаем в клетках (евклидово между центрами клеток).
+    /// Возвращает Unit или null.
+    /// </summary>
+    public Unit FindNearestEnemy()
+    {
+        var gm = GridManager.Instance;
+
+        if (gm == null)
+        {
+            return null;
+        }
+
+        Unit nearest = null;
+        float bestDistSqr = detectionRange * detectionRange;
+
+        List<Unit> all = gm.GetAllUnits();
+
+        for (int i = 0; i < all.Count; i++)
+        {
+            Unit u = all[i];
+
+            // Мёртвый/уничтоженный юнит (unity-null) или своя команда — пропускаем.
+            if (u == null || u.gameObject == null || u.team == this.team)
+            {
+                continue;
+            }
+
+            int dx = u.GridPos.x - GridPos.x;
+            int dy = u.GridPos.y - GridPos.y;
+            float distSqr = dx * dx + dy * dy;
+
+            if (distSqr < bestDistSqr)
+            {
+                bestDistSqr = distSqr;
+                nearest = u;
+            }
+        }
+
+        return nearest;
+    }
+
+    /// <summary>
+    /// Пересчитать направление взгляда: развернуть юнита лицом к ближайшему
+    /// врагу (если тот есть в радиусе обнаружения). Направление квантуется до
+    /// 8 секторов (логика как в Formation.cs: atan2 + округление до 45°).
+    /// Если врага нет — Facing не меняется.
+    /// </summary>
+    public void UpdateFacing()
+    {
+        Unit enemy = FindNearestEnemy();
+
+        if (enemy == null)
+        {
+            return; // врагов рядом нет — сохраняем текущий Facing
+        }
+
+        Vector2Int dir = enemy.GridPos - GridPos;
+
+        // Совпадение клеток невозможно, но защита от нулевого вектора нужна:
+        // Atan2(0,0) вернёт 0 и юнит развернулся бы без причины.
+        if (dir == Vector2Int.zero)
+        {
+            return;
+        }
+
+        // Квантование до 8 секторов (как в Formation.cs):
+        float angle = Mathf.Atan2(dir.y, dir.x);
+        int k = Mathf.RoundToInt(angle / (Mathf.PI * 0.25f));
+        k = ((k % 8) + 8) % 8;
+
+        Vector2Int newFacing = Sectors[k];
+
+        if (newFacing != Facing)
+        {
+            Facing = newFacing;
+            ApplyFacing();
         }
     }
 
