@@ -340,6 +340,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 1682924989}
   - {fileID: 1186794681}
   - {fileID: 1988891258}
   - {fileID: 1135970902}
@@ -610,7 +611,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GridRenderer
   lineMaterial: {fileID: 2100000, guid: ada4a88a0a8af8d4f95c8e818bca6829, type: 2}
-  lineColor: {r: 0.6975347, g: 0.83139014, b: 0.8962264, a: 0.6039216}
+  lineColor: {r: 0.80397826, g: 0.82774115, b: 0.8396226, a: 0.40392157}
   visible: 0
 --- !u!4 &1682924989
 Transform:
@@ -620,12 +621,12 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1682924987}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -2.31415, y: 0, z: 0.0189}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 0}
+  m_Father: {fileID: 954305207}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1988891257
 GameObject:
@@ -680,4 +681,3 @@ SceneRoots:
   - {fileID: 963194228}
   - {fileID: 705507995}
   - {fileID: 954305207}
-  - {fileID: 1682924989}
