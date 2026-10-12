@@ -1,0 +1,66 @@
+Заметки промтов:
+1. Базовый, перед каждым новым чатом
+=== КОНТЕКСТ ПРОЕКТА ===
+
+Прототип тактической игры в стиле Bad North (Unity 6 LTS, C#, Built-in Render Pipeline).
+Репозиторий: https://github.com/strivingatt/badnorthproto
+
+ПЕРЕД КАЖДЫМ НАПИСАНИЕМ КОДА:
+1. Обновить локальную копию: git pull origin main
+2. Прочитать актуальные файлы из Assets/Scripts/ (особенно те, которые будешь менять)
+3. Убедиться, что работаешь с последней версией кода
+
+=== ТЕКУЩЕЕ СОСТОЯНИЕ ПРОЕКТА ===
+
+✅ Реализовано:
+- GridManager: сетка 24x24, occupancy, blocked, GetAllUnits(), ForceOccupy()
+- Unit: GridPos, Facing, team (Player/Enemy), HP, TryAttack(), TakeDamage(), Die(), движение по A*
+- Squad: CommandFormation, SlotAssigner (жадное назначение по Manhattan)
+- Formation: GetLineSlots с квантованием до 8 секторов, SelfTest
+- Pathfinding: AStar 8-направленный, octile heuristic, corner-cut prevention
+- InputController: state machine (Idle/Selected/Dragging), выделение, drag формации, клавиша B для камней
+- CombatResolver: тик 0.1 сек, два прохода (cooldown + attack)
+- EnemyAI: поиск ближайшего игрока, движение по A*, атака в зоне
+- ObstaclePlacer: камни размером 1-5 (клавиши 1-5), блокировка N×N клеток
+- GridRenderer: визуализация сетки через GL.LINES, Sprites/Default, прозрачность
+- Team enum, SlotAssigner, FormationPreview
+
+⚠️ Особенности архитектуры:
+- Юниты проходят сквозь друг друга (нет коллизий, ForceOccupy перезаписывает occupancy)
+- GridPos обновляется в FixedUpdate с deadzone 0.4
+- Юниты уязвимы в движении (GridPos = фактическая позиция)
+- Нет резервирования целевых клеток при движении (TryOccupy убран из CommandFormation)
+
+=== ФАЙЛЫ В Assets/Scripts/ ===
+
+GridManager.cs, Unit.cs, Squad.cs, Formation.cs, Pathfinding.cs, 
+InputController.cs, CombatResolver.cs, EnemyAI.cs, ObstaclePlacer.cs, 
+GridRenderer.cs, FormationPreview.cs, SlotAssigner.cs, Team.cs, SquadSpawner.cs
+
+=== ПРАВИЛА РАБОТЫ ===
+
+1. .gitignore: НЕ ТРОГАТЬ НИ ПРИ КАКИХ ОБСТОЯТЕЛЬСТВАХ
+2. Перед изменением файла — прочитать его актуальную версию из репозитория
+3. Не дублировать логику из других файлов (использовать публичный API)
+4. Не хардкодить значения, которые можно получить из GridManager/Unit
+5. Не использовать физику (Rigidbody/Collider) для коллизий юнитов
+6. Не создавать новые файлы без явного указания в задаче
+7. Формат вывода: список изменённых файлов (+N/−M), описание, чек-лист приёмки
+8. Если нельзя писать файлы напрямую — вывести полный код одним блоком ```csharp без нумерации строк
+
+=== СТИЛЬ КОДА ===
+
+- XML-комментарии для публичных методов
+- Русские комментарии для объяснения логики
+- Guard clauses в начале методов
+- Debug.Log/LogWarning/LogError с префиксом [ClassName]
+- Никаких магических чисел без констант
+
+=== ТЕКУЩИЙ ЭТАП ===
+
+Шаг 9: ИИ врагов + авто-поворот юнитов
+Следующие шаги: классы юнитов, волны врагов, UI
+
+=== ЗАДАЧА ===
+
+[ВСТАВИТЬ КОНКРЕТНУЮ ЗАДАЧУ ЗДЕСЬ]
