@@ -140,11 +140,11 @@ public class SquadSpawner : MonoBehaviour
             Unit unit = go.GetComponent<Unit>();
             if (unit == null) unit = go.AddComponent<Unit>();
 
-            unit.SetDefaultVisual(matEnemy);   // родной материал врага (красный)
-            unit.matHit = matHit;
             unit.team = Team.Enemy;
-            unit.Facing = new Vector2Int(0, 1); // смотрят на +Z (к игроку)
-            unit.Init(cell, enemySquad);
+            unit.Facing = new Vector2Int(0, 1);
+            unit.matHit = matHit;
+            unit.Init(cell, enemySquad);       // сначала Init — строит кэш
+            unit.SetDefaultVisual(matEnemy);   // потом краска — кэш уже есть
 
             enemySquad.Add(unit);
         }

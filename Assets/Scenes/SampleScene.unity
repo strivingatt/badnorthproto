@@ -306,7 +306,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f7f8aaea3ffa63c41900880be631070a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SquadSpawner
-  unitPrefab: {fileID: 2218918813733092633, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
+  unitPrefab: {fileID: 2853641944360342225, guid: 8c412e563abbdfb40855f00bdecdb185, type: 3}
   matUnit: {fileID: 2100000, guid: 18b13219ddad2fa47a55902ae7ce5774, type: 2}
   spawnOrigin: {x: 15, y: 15}
   matEnemy: {fileID: 2100000, guid: fbb9f58e65bcd0a4e8f18f5c17f6726a, type: 2}
@@ -692,67 +692,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ObstaclePlacer
   rockPrefab: {fileID: 5518265753919016978, guid: 5fd9f849f534a9d4c95a0f456e05d1ce, type: 3}
   matRock: {fileID: 2100000, guid: ceecf79c4c9243c4088ca3f0f22d63d9, type: 2}
---- !u!1001 &7070764859141596840
-PrefabInstance:
-  m_ObjectHideFlags: 0
-  serializedVersion: 2
-  m_Modification:
-    serializedVersion: 3
-    m_TransformParent: {fileID: 0}
-    m_Modifications:
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalPosition.x
-      value: 10.5
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalPosition.y
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalPosition.z
-      value: 10.5
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalRotation.w
-      value: 1
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalRotation.x
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalRotation.y
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalRotation.z
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalEulerAnglesHint.x
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalEulerAnglesHint.y
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 1549517870013982627, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_LocalEulerAnglesHint.z
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 2218918813733092633, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: m_Name
-      value: cubWithblade
-      objectReference: {fileID: 0}
-    - target: {fileID: 3245411576491120263, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
-      propertyPath: 'm_Materials.Array.data[0]'
-      value: 
-      objectReference: {fileID: 2100000, guid: 18b13219ddad2fa47a55902ae7ce5774, type: 2}
-    m_RemovedComponents: []
-    m_RemovedGameObjects: []
-    m_AddedGameObjects: []
-    m_AddedComponents: []
-  m_SourcePrefab: {fileID: 100100000, guid: cd667db7dc9975f4793cd7551acfee14, type: 3}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -760,4 +699,3 @@ SceneRoots:
   - {fileID: 963194228}
   - {fileID: 705507995}
   - {fileID: 954305207}
-  - {fileID: 7070764859141596840}

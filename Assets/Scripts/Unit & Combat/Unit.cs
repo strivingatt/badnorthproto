@@ -5,6 +5,14 @@ using UnityEngine;
 /// <summary>
 /// Юнит на сетке. Хранит логическую позицию, направление взгляда и принадлежность
 /// к отряду. Движение — по клеткам пути A* (обход заблокированных клеток).
+///
+/// ВИЗУАЛ: модель может содержать несколько рендереров (MeshRenderer тела,
+/// SkinnedMeshRenderer меча и т.п.). Перекраска (SetVisual) и вспышка урона
+/// (Flash) работают с кэшем всех рендереров модели (rendererCache), нос
+/// (объект "Nose") исключён.
+///
+/// АНИМАЦИЯ: Animator опционален (может отсутствовать у старых префабов-кубов).
+/// Используется ТОЛЬКО для триггера атаки: SetTrigger("Attack").
 /// </summary>
 public class Unit : MonoBehaviour
 {
@@ -38,7 +46,7 @@ public class Unit : MonoBehaviour
     /// <summary>Урон одной атаки.</summary>
     public int attackDamage = 1;
 
-    /// <summary>Длительная перезарядки атаки, секунд.</summary>
+    /// <summary>Длительность перезарядки атаки, секунд.</summary>
     public float attackCooldown = 0.8f;
 
     /// <summary>Оставшееся время до следующей атаки, секунд (тикает CombatResolver).</summary>
@@ -62,6 +70,20 @@ public class Unit : MonoBehaviour
     /// <summary>«Родной» материал юнита (белый у игроков, красный у врагов):
     /// запоминается при спавне, восстанавливается после снятия выделения.</summary>
     private Material defaultMaterial;
+
+    /// <summary>
+    /// Пары «рендерер → его текущий оригинальный материал» для возврата
+    /// после вспышки урона. Строится в Init() через BuildRendererCache()
+    /// ПОСЛЕ создания носа; нос в кэш не входит.
+    /// </summary>
+    private readonly List<(Renderer renderer, Material original)> rendererCache
+        = new List<(Renderer, Material)>();
+
+    /// <summary>
+    /// Animator модели (может быть null — у старых префабов-кубов аниматора нет).
+    /// Используется только для триггера атаки: SetTrigger("Attack").
+    /// </summary>
+    private Animator animator;
 
     // --- Авто-поворот к ближайшему врагу ---
 
@@ -89,10 +111,6 @@ public class Unit : MonoBehaviour
         new Vector2Int(0, -1),
         new Vector2Int(1, -1),
     };
-
-    /// <summary>Кэш оригинального материала рендерера (sharedMaterial), чтобы
-    /// вспышка урона всегда возвращала исходный цвет без создания instance.</summary>
-    private Material originalMaterial;
 
     /// <summary>
     /// Инициализировать юнита: задать позицию и зарезервировать за ним клетку
@@ -124,25 +142,54 @@ public class Unit : MonoBehaviour
         lastGridPos = cell;
 
         // Создаём «нос» child-объектом КОДОМ (не через префаб) — визуальный
-        // указатель направления, торчит вперёд по локальному +Z.
+        // указатель направления. ВАЖНО: до BuildRendererCache, чтобы нос
+        // успел появиться и был отфильтрован по имени.
         CreateNose();
 
         // Применяем текущее направление: локальный +Z юнита смотрит вдоль Facing.
         ApplyFacing();
 
-        // Кэшируем оригинальный материал (через sharedMaterial, чтобы не создавать
-        // instance) — точка возврата цвета после вспышки урона.
-        var renderer = GetComponent<Renderer>();
-        if (renderer != null)
-        {
-            originalMaterial = renderer.sharedMaterial;
-        }
+        // Кэшируем все рендереры модели (тело + меч и т.п.), кроме носа.
+        BuildRendererCache();
+
+        // Animator может отсутствовать (старые префабы-кубы) — это допустимо,
+        // анимация атаки просто не проиграется.
+        animator = GetComponent<Animator>();
 
         // ИИ врагов: если это вражеский юнит — навешиваем EnemyAI кодом
         // (компонент появляется автоматически сразу после регистрации на сетке).
         if (team == Team.Enemy && GetComponent<EnemyAI>() == null)
         {
             gameObject.AddComponent<EnemyAI>();
+        }
+    }
+
+    /// <summary>
+    /// Собрать все рендереры модели (MeshRenderer, SkinnedMeshRenderer и т.п.),
+    /// исключив объект "Nose". Для каждого сохранить его sharedMaterial как
+    /// «оригинал» для возврата после вспышки урона.
+    /// includeInactive = true — на случай, если часть модели временно отключена.
+    /// </summary>
+    private void BuildRendererCache()
+    {
+        rendererCache.Clear();
+
+        Renderer[] all = GetComponentsInChildren<Renderer>(true);
+
+        foreach (Renderer r in all)
+        {
+            if (r == null) continue;
+
+            // Исключаем нос (указатель направления) — он не перекрашивается.
+            if (r.gameObject.name == "Nose") continue;
+
+            rendererCache.Add((r, r.sharedMaterial));
+        }
+
+        if (rendererCache.Count == 0)
+        {
+            Debug.LogWarning($"[Unit] {name}: не найдено ни одного рендерера (кроме носа) — " +
+                             $"перекраска и вспышка урона работать не будут.", this);
         }
     }
 
@@ -160,7 +207,7 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Найти ближайшего живого врага (team != this.team) в радиусе detectionRange.
-    /// Расстояние считаем в клетках (евклидово между центрами клеток).
+    /// Расстояние считаем в клетках (евклидово, целочисленно — без GridToWorld).
     /// Возвращает Unit или null.
     /// </summary>
     public Unit FindNearestEnemy()
@@ -187,12 +234,13 @@ public class Unit : MonoBehaviour
                 continue;
             }
 
-            Vector3 myPos = gm.GridToWorld(GridPos);
-            Vector3 theirPos = gm.GridToWorld(u.GridPos);
+            // Расстояние в клетках (целочисленно). detectionRange трактуется
+            // в клетках, а не в мировых единицах — не зависит от cellSize.
+            int dx = u.GridPos.x - GridPos.x;
+            int dy = u.GridPos.y - GridPos.y;
+            float distSqr = dx * dx + dy * dy;
 
-            float distSqr = (theirPos - myPos).sqrMagnitude;
-
-            if (distSqr <= bestDistSqr)
+            if (distSqr < bestDistSqr)
             {
                 bestDistSqr = distSqr;
                 nearest = u;
@@ -205,8 +253,7 @@ public class Unit : MonoBehaviour
     /// <summary>
     /// Пересчитать направление взгляда: развернуть юнита лицом к ближайшему
     /// врагу (если тот есть в радиусе обнаружения). Направление квантуется до
-    /// 8 секторов (логика как в Formation.cs: atan2 + округление до 45°).
-    /// Если врага нет — Facing не меняется.
+    /// 8 секторов. Если врага нет — Facing не меняется.
     /// </summary>
     public void UpdateFacing()
     {
@@ -226,7 +273,8 @@ public class Unit : MonoBehaviour
             return;
         }
 
-        // Квантование до 8 секторов (как в Formation.cs):
+        // Квантование до 8 секторов. Таблица Sectors обходит по часовой от +X,
+        // поэтому угол берём как Atan2(dir.y, dir.x) — от +X к +Y.
         float angle = Mathf.Atan2(dir.y, dir.x);
         int k = Mathf.RoundToInt(angle / (Mathf.PI * 0.25f));
         k = ((k % 8) + 8) % 8;
@@ -243,8 +291,8 @@ public class Unit : MonoBehaviour
     /// <summary>
     /// Синхронизация логической позиции с фактической (БЕЗ физики): каждый
     /// FixedUpdate читаем клетку под transform.position и, если юнит вошёл в
-    /// новую клетку, обновляем GridPos и occupancy. Занятая чужим юнитом клетка
-    /// — логическая коллизия: позиция откатывается к последней зафиксированной.
+    /// новую клетку, обновляем GridPos и occupancy. Юниты не блокируют друг
+    /// друга — клетка перезаписывается последним вошедшим.
     /// </summary>
     private void FixedUpdate()
     {
@@ -293,12 +341,6 @@ public class Unit : MonoBehaviour
     /// вектора Facing в мировых координатах.
     /// Соответствие: Facing (0,1) -> мир +Z; (1,0) -> мир +X; (0,-1) -> мир -Z;
     /// (-1,0) -> мир -X; диагонали -> 45 градусов.
-    ///
-    /// ПОЧЕМУ Atan2(Facing.x, Facing.y), а не Atan2(y, x):
-    /// стандартный atan2(y, x) измеряет угол ОТ мировой оси +X против часовой,
-    /// но в Unity yaw — это угол ВОКРУГ оси Y, отсчитываемый ОТ направления +Z
-    /// к направлению +X. Поэтому роль «синусной» координаты играет X, а
-    /// «косинной» — Z. Atan2(y, x) дал бы разворот на 90° относительно нужного.
     /// </summary>
     public void ApplyFacing()
     {
@@ -307,9 +349,9 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Сменить материал у рендерера юнита (если он есть).
-    /// Обновляет кэш originalMaterial, чтобы вспышка урона возвращала актуальный
-    /// «родной» цвет (например, после подсветки выделения).
+    /// Сменить материал у ВСЕХ рендереров кэша (тело + меч и т.п.).
+    /// Обновляет «оригиналы» в кэше, чтобы вспышка урона возвращала актуальный
+    /// цвет (например, после подсветки выделения).
     /// </summary>
     public void SetVisual(Material mat)
     {
@@ -319,22 +361,22 @@ public class Unit : MonoBehaviour
             return;
         }
 
-        var renderer = GetComponent<Renderer>();
-        if (renderer != null)
+        for (int i = 0; i < rendererCache.Count; i++)
         {
-            renderer.material = mat;
-            originalMaterial = mat;
-        }
-        else
-        {
-            Debug.LogWarning($"[Unit] На объекте \"{name}\" нет Renderer — материал не применён.", this);
+            var (r, _) = rendererCache[i];
+
+            if (r != null)
+            {
+                r.material = mat;
+                rendererCache[i] = (r, mat);
+            }
         }
     }
 
     /// <summary>
     /// Назначить «родной» материал юнита и сразу применить его.
-    /// Вызывается при спавне (SquadSpawner) вместо SetVisual — чтобы юнит
-    /// помнил свой исходный цвет и мог восстановить его после снятия выделения.
+    /// Вызывается при спавне (SquadSpawner) — чтобы юнит помнил свой исходный
+    /// цвет и мог восстановить его после снятия выделения.
     /// </summary>
     public void SetDefaultVisual(Material mat)
     {
@@ -359,7 +401,7 @@ public class Unit : MonoBehaviour
     /// (центр — GridPos + Facing, плюс ±1 по перпендикуляру «вправо»).
     ///
     /// Пример расчёта для Facing=(0,1): right = (Facing.y, -Facing.x) = (1,0);
-    /// клетки: (x+1,y-1), (x+1,y), (x+1,y+1) — столбец前方 на y+1 шириной 3.
+    /// клетки: (x-1,y+1), (x,y+1), (x+1,y+1) — столбец на y+1 шириной 3.
     /// </summary>
     public List<Vector2Int> GetAttackCells()
     {
@@ -377,7 +419,8 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Попытка атаки: цели — активные враги команды в зоне атаки.
-    /// Кулдаун запускается только при наличии целей.
+    /// Кулдаун запускается только при наличии целей; при успешной атаке
+    /// дёргается триггер анимации "Attack".
     /// </summary>
     public bool TryAttack()
     {
@@ -403,6 +446,14 @@ public class Unit : MonoBehaviour
         if (targets.Count == 0) return false;
 
         cooldownTimer = attackCooldown;
+
+        // Триггер (не Play/bool) — повторные атаки корректно перезапускают клип.
+        // animator может быть null у старых префабов-кубов.
+        if (animator != null)
+        {
+            animator.SetTrigger("Attack");
+        }
+
         Debug.Log($"[Combat] {name} бьёт {targets.Count} целей на {attackDamage} урона");
 
         foreach (var target in targets)
@@ -414,24 +465,21 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Получить урон: минус HP, вспышка материала, смерть при HP <= 0.
-    /// При цепочке быстрых ударов: ПЕРЕД остановкой старой корутины возвращаем
-    /// оригинальный материал — иначе matHit «застрянет», если новая вспышка
-    /// успеет перезапустить корутину до завершения предыдущей.
+    /// Получить урон: минус HP, вспышка ВСЕХ рендереров, смерть при HP <= 0.
+    /// При цепочке быстрых ударов: перед остановкой старой корутины
+    /// восстанавливаем оригиналы вручную — иначе matHit может «застрять».
     /// </summary>
     public void TakeDamage(int dmg, Unit attacker)
     {
         hp -= dmg;
         Debug.Log($"[Combat] {name} получил {dmg} урона (HP: {hp}/{maxHp})");
 
-        // Останавливаем предыдущую вспышку и сразу запускаем новую.
-        // Возвращать материал вручную НЕ нужно: Flash() первым же действием
-        // выставит matHit (StartCoroutine выполняется синхронно до первого yield),
-        // поэтому промежуточный restore был бы перезаписан в том же кадре.
         if (flashCoroutine != null)
         {
             StopCoroutine(flashCoroutine);
             flashCoroutine = null;
+
+            RestoreAllOriginals();
         }
 
         flashCoroutine = StartCoroutine(Flash());
@@ -441,41 +489,56 @@ public class Unit : MonoBehaviour
             Die();
         }
     }
+
     /// <summary>
-    /// Визуальная вспышка «получил урон»: подмена материала на matHit на 0.1 сек.
-    /// Используется WaitForSecondsRealtime — вспышка корректно отрабатывает даже
-    /// при паузе/остановке времени (Time.timeScale = 0).
-    /// Проверка gameObject != null (а не this != null) надёжнее: для уничтоженного
-    /// объекта this может быть «не null» в C#-смысле, но обращение к членам падает.
+    /// Визуальная вспышка «получил урон»: подмена материалов ВСЕХ рендереров
+    /// кэша на matHit на 0.1 сек, затем возврат каждому его оригинала.
     /// </summary>
     private IEnumerator Flash()
     {
-        var renderer = GetComponent<Renderer>();
-        if (renderer == null || matHit == null || originalMaterial == null)
+        if (matHit == null || rendererCache.Count == 0)
             yield break;
 
-        renderer.material = matHit;
+        foreach (var pair in rendererCache)
+        {
+            if (pair.renderer != null)
+            {
+                pair.renderer.material = matHit;
+            }
+        }
+
         yield return new WaitForSecondsRealtime(0.1f);
 
-        if (gameObject != null && renderer != null && originalMaterial != null)
+        if (gameObject != null)
         {
-            renderer.material = originalMaterial;
+            RestoreAllOriginals();
         }
 
         flashCoroutine = null;
     }
 
     /// <summary>
-    /// Смерть юнита: остановить вспышку (вернув оригинальный цвет), освободить
-    /// клетку, убрать себя из отряда, уничтожить объект.
+    /// Пройти по кэшу и вернуть каждому рендереру его оригинальный материал.
+    /// </summary>
+    private void RestoreAllOriginals()
+    {
+        foreach (var pair in rendererCache)
+        {
+            if (pair.renderer != null && pair.original != null)
+            {
+                pair.renderer.material = pair.original;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Смерть юнита: остановить вспышку, освободить клетку, убрать себя
+    /// из отряда, уничтожить объект.
     /// </summary>
     public void Die()
     {
         Debug.Log($"[Combat] {name} погиб");
 
-        // Останавливаем корутину вспышки до уничтожения объекта, чтобы она
-        // не пыталась обратиться к уничтожаемому рендереру после Destroy().
-        // Материал НЕ восстанавливаем: объект уничтожается следующим Destroy().
         if (flashCoroutine != null)
         {
             StopCoroutine(flashCoroutine);
@@ -497,8 +560,7 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Запустить перемещение юнита из клетки fromCell в целевую клетку targetCell
-    /// ПО ПУТИ A* (обход камней). Стартовая клетка передаётся ЯВНО: GridPos уже
-    /// может быть равен targetCell (резервирование), брать его как старт нельзя.
+    /// ПО ПУТИ A* (обход камней). Стартовая клетка передаётся ЯВНО.
     /// </summary>
     public void StartMove(Vector2Int fromCell, Vector2Int targetCell)
     {
@@ -518,13 +580,11 @@ public class Unit : MonoBehaviour
             return;
         }
 
-        // Останавливаем предыдущее движение, если оно шло.
         if (moveCoroutine != null)
         {
             StopCoroutine(moveCoroutine);
         }
 
-        // Фиксируем реальную стартовую клетку для синхронизации в FixedUpdate.
         lastGridPos = fromCell;
 
         moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
@@ -532,10 +592,9 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Корутина движения ПО КЛЕТКАМ пути: MoveTowards к центру каждой клетки
-    /// пути со скоростью moveSpeed. Изменяется ТОЛЬКО transform.position —
-    /// rotation (Facing, «нос») не трогается. GridPos ведёт FixedUpdate.
+    /// пути со скоростью moveSpeed.
     /// </summary>
-    private System.Collections.IEnumerator MoveAlongPath(List<Vector2Int> path, Vector2Int targetCell)
+    private IEnumerator MoveAlongPath(List<Vector2Int> path, Vector2Int targetCell)
     {
         IsMoving = true;
 
@@ -555,7 +614,6 @@ public class Unit : MonoBehaviour
             }
         }
 
-        // Финальная доводка в центр целевой клетки.
         transform.position = GridManager.Instance.GridToWorld(targetCell);
 
         IsMoving = false;
@@ -564,7 +622,6 @@ public class Unit : MonoBehaviour
 
     private void OnDestroy()
     {
-        // При уничтожении освобождаем клетку, чтобы она снова стала доступной.
         if (GridManager.Instance != null)
         {
             GridManager.Instance.Free(GridPos, this);
