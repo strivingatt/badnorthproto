@@ -454,7 +454,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5aac8eb111894197b62fb00ea8b97cb5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraController
-  rotationSpeed: 0.25
+  rotationSpeed: 2
   dragThresholdPixels: 6
   zoomSpeed: 1.1
   minZoom: 8
