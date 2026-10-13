@@ -138,7 +138,10 @@ public class InputController : MonoBehaviour
         }
 
         // --- ПКМ ---
-        if (Input.GetMouseButtonDown(1))
+        // Короткий клик ПКМ (без заметного движения мыши) = отмена drag / снятие
+        // выделения, как раньше. Если CameraController уже определяет ПКМ-drag
+        // вращения (мышь сдвинулась за порог), клик-отмену не выполняем.
+        if (Input.GetMouseButtonDown(1) && !CameraController.IsRightMouseDragging)
         {
             if (state == State.Dragging)
             {
