@@ -7,14 +7,19 @@ using UnityEngine;
 ///
 /// Логика:
 /// 1. Поиск ближайшего юнита team == Player в радиусе detectionRange (клетки,
-///    Manhattan-расстояние от GridPos) — через GridManager.GetAllUnits().
-/// 2. Если цель найдена и расстояние до неё > attackRange — строим путь
-///    Pathfinding.AStar к клетке цели и идём по нему плавно КОРУТИНОЙ
+///    метрика Чебышёва max(|dx|,|dy|) от GridPos — Fix-1, баг Б; раньше был
+///    Manhattan, из-за чего диагональный сосед считался «далёким» и враг
+///    строил путь В клетку цели) — через GridManager.GetAllUnits().
+/// 2. Если цель найдена и НЕ смежна с нами (Чебышёв > attackRange) — строим
+///    путь Pathfinding.AStar к ближайшей СВОБОДНОЙ клетке, смежной с целью
+///    (Чебышёв = 1 от target.GridPos), и идём по нему плавно КОРУТИНОЙ
 ///    MoveAlongPath (по образцу Unit.MoveAlongPath): Vector3.MoveTowards
 ///    со скоростью unit.moveSpeed, дедзона 0.01f, финальный snap в центр
-///    целевой клетки.
-/// 3. Если цель в зоне поражения (расстояние <= attackRange) — останавливаемся
-///    и смотрим на цель (Facing + ApplyFacing); атаку выполняет CombatResolver,
+///    целевой клетки. В саму клетку цели путь НЕ строится — это исключает
+///    ситуацию «два юнита в одной клетке».
+/// 3. Если цель в зоне поражения (Чебышёв <= attackRange, т.е. смежность по
+///    8 направлениям) — останавливаемся (MoveTowards НЕ вызываем) и смотрим
+///    на цель (Facing + ApplyFacing); атаку выполняет CombatResolver,
 ///    вызывая TryAttack() с общего тика — сам ИИ НЕ дерёт.
 /// 4. Если цель умерла (unity-null) или ушла за пределы detectionRange — сброс
 ///    и поиск новой цели.
@@ -33,19 +38,19 @@ using UnityEngine;
 /// слое, что и движение игрока, — поведение идентично.
 ///
 /// Координатные оси: Vector2Int (x, y) сетки -> мир (x, z); ось Y сетки = мир +Z.
-/// Расстояния считаем в КЛЕТКАХ (Manhattan), чтобы не зависеть от cellSize.
+/// Расстояния считаем в КЛЕТКАХ (Чебышёв), чтобы не зависеть от cellSize.
 /// </summary>
 public class EnemyAI : MonoBehaviour
 {
     [Header("Detection")]
-    /// <summary>Радиус обнаружения игрока, в клетках (Manhattan).</summary>
+    /// <summary>Радиус обнаружения игрока, в клетках (Чебышёв).</summary>
     public float detectionRange = 10f;
 
     [Header("Engagement")]
     /// <summary>
-    /// Дистанция вступления в бой (Manhattan, целое число клеток). Значение по
+    /// Дистанция вступления в бой (Чебышёв, целое число клеток). Значение по
     /// факту сравнивается как int, дробная часть игнорируется. Default 1 =
-    /// атаковать только с соседней клетки.
+    /// атаковать только с соседней клетки (смежность по 8 направлениям).
     /// (Раньше стояло 1.5f, что для целочисленного Manhattan эквивалентно 1 —
     /// семантическая ложь; приведено к честному значению.)
     /// </summary>
@@ -124,7 +129,8 @@ public class EnemyAI : MonoBehaviour
 
         if (dist <= attackRange)
         {
-            // Цель в зоне поражения (п.3): останавливаемся, разворачиваемся лицом
+            // Цель смежна с нами (Чебышёв <= 1 — зона атаки, п.3 ТЗ Fix-1):
+            // останавливаемся (MoveTowards НЕ вызываем), разворачиваемся лицом
             // к цели. Атаковать будет CombatResolver своим тиком TryAttack().
             StopMovement();
             FaceTarget();
@@ -189,10 +195,14 @@ public class EnemyAI : MonoBehaviour
     }
 
     /// <summary>
-    /// Построить путь A* от текущей клетки юнита к клетке цели и запустить
-    /// корутину движения. Проходимости клеток ведёт Pathfinding (занятые —
-    /// проходимы как промежуточные, goal проходима всегда). Пути нет — стоим на
-    /// месте; попробуем снова на следующем пересчёте.
+    /// Построить путь A* от текущей клетки юнита к ближайшей СВОБОДНОЙ клетке,
+    /// смежной с целью (Чебышёв = 1 от target.GridPos), и запустить корутину
+    /// движения. В саму клетку цели путь НЕ строится (Fix-1, баг Б): иначе
+    /// враг залезал в занятую клетку — два юнита в одной клетке, нулевой вектор
+    /// направления, никто не бьёт. Проходимость клеток ведёт Pathfinding.
+    /// Если все 8 соседних клеток заняты/заблокированы — пробуем путь к самой
+    /// цели как fallback (прежнее поведение). Пути нет — стоим на месте;
+    /// попробуем снова на следующем пересчёте.
     ///
     /// Анти-спам (п.4 правок): warning о недоступном пути печатается не чаще
     /// одного раза в PATH_FAIL_LOG_INTERVAL (5 сек) на одного врага — иначе при
@@ -206,7 +216,17 @@ public class EnemyAI : MonoBehaviour
             return;
         }
 
-        List<Vector2Int> newPath = Pathfinding.AStar(unit.GridPos, target.GridPos);
+        Vector2Int goal = FindAdjacentFreeCell(target.GridPos);
+
+        // Fallback: ни одна смежная с целью клетка не свободна — идём к цели
+        // (как раньше; Unit.FixedUpdate при «логической коллизии» не даст
+        // встать в занятую клетку навсегда).
+        if (goal == target.GridPos)
+        {
+            Debug.Log($"[EnemyAI] {unit.name}: у цели {target.GridPos} нет свободной смежной клетки — путь к самой цели.");
+        }
+
+        List<Vector2Int> newPath = Pathfinding.AStar(unit.GridPos, goal);
 
         if (newPath == null)
         {
@@ -215,7 +235,7 @@ public class EnemyAI : MonoBehaviour
             {
                 lastPathFailLogTime = Time.time;
                 Debug.LogWarning($"[EnemyAI] {unit.name}: путь до цели {target.name} " +
-                                 $"({target.GridPos}) недоступен — стоим на месте.");
+                                 $"({goal}) недоступен — стоим на месте.");
             }
 
             StopMovement();
@@ -226,6 +246,45 @@ public class EnemyAI : MonoBehaviour
 
         // Единая точка запуска движения: стоп старой корутины -> старт новой.
         StartMovement(path[path.Count - 1]);
+    }
+
+    /// <summary>
+    /// Выбрать цель пути: из 8 клеток, смежных с целью (Чебышёв = 1 от
+    /// targetCell), берём СВОБОДНУЮ (в границах, не заблокирована, без чужих
+    /// юнитов), ближайшую к нам по Чебышёву. Если таких нет — возвращаем
+    /// targetCell (fallback для RepathToTarget). Клетка самого юнита в
+    /// рассмотрение не входит.
+    /// </summary>
+    private Vector2Int FindAdjacentFreeCell(Vector2Int targetCell)
+    {
+        var gm = GridManager.Instance;
+
+        Vector2Int best = targetCell;
+        int bestDist = int.MaxValue;
+
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                if (dx == 0 && dy == 0) continue; // сама клетка цели — не цель пути
+
+                Vector2Int cell = targetCell + new Vector2Int(dx, dy);
+
+                if (cell == unit.GridPos) continue; // мы там уже стоим
+
+                if (!gm.IsFree(cell)) continue; // вне сетки / камень / занят юнитом
+
+                int dist = DistanceInCells(unit.GridPos, cell);
+
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = cell;
+                }
+            }
+        }
+
+        return best;
     }
 
     /// <summary>
@@ -336,11 +395,13 @@ public class EnemyAI : MonoBehaviour
     }
 
     /// <summary>
-    /// Расстояние между клетками в «клеточных» единицах (Manhattan).
+    /// Расстояние между клетками в «клеточных» единицах метрикой Чебышёва
+    /// max(|dx|, |dy|) (Fix-1, баг Б: вместо Manhattan — диагональный сосед
+    /// теперь дистанция 1, т.е. «в зоне атаки», а не 2).
     /// Возвращает int; сравнение с float-радиусами безопасно (приведение).
     /// </summary>
     private static int DistanceInCells(Vector2Int a, Vector2Int b)
     {
-        return Mathf.Abs(a.x - b.x) + Mathf.Abs(a.y - b.y);
+        return Mathf.Max(Mathf.Abs(a.x - b.x), Mathf.Abs(a.y - b.y));
     }
 }
