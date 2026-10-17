@@ -88,12 +88,12 @@ MonoBehaviour:
   IsMoving: 0
   moveSpeed: 4
   team: 0
-  maxHp: 3
+  maxHp: 5
   attackDamage: 1
   attackCooldown: 0.8
   cooldownTimer: 0
   matHit: {fileID: 0}
-  detectionRange: 10
+  detectionRange: 6
 --- !u!95 &5820270693581936595
 Animator:
   serializedVersion: 7

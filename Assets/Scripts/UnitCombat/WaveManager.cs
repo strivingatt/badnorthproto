@@ -1,51 +1,4 @@
 using UnityEngine;
-using UnityEngine.UI;
-
-/// <summary>
-/// Универсальный текстовый дисплей для UI: работает и с legacy-Text
-/// (UnityEngine.UI.Text), и с TextMeshProUGUI — без прямой зависимости
-/// проекта от пакета TMP. Вешается на объект текста, ссылка передаётся
-/// WaveManager'у через поле waveText.
-/// </summary>
-[RequireComponent(typeof(RectTransform))]
-public class ITextDisplay : MonoBehaviour
-{
-    private Text legacyText;
-    private Component tmpComponent;   // TextMeshProUGUI через reflection (нет TMP-зависимости)
-    private System.Reflection.PropertyInfo tmpTextProperty;
-
-    private void Awake()
-    {
-        legacyText = GetComponent<Text>();
-
-        if (legacyText == null)
-        {
-            // Ищем TMP-компонент по имени типа — без compile-time ссылки на TMPro.
-            foreach (var comp in GetComponents<Component>())
-            {
-                if (comp != null && comp.GetType().Name == "TextMeshProUGUI")
-                {
-                    tmpComponent = comp;
-                    tmpTextProperty = comp.GetType().GetProperty("text");
-                    break;
-                }
-            }
-        }
-    }
-
-    /// <summary>Установить текст в активный компонент (legacy или TMP).</summary>
-    public void SetText(string value)
-    {
-        if (legacyText != null)
-        {
-            legacyText.text = value;
-        }
-        else if (tmpComponent != null && tmpTextProperty != null)
-        {
-            tmpTextProperty.SetValue(tmpComponent, value);
-        }
-    }
-}
 
 /// <summary>
 /// Система волн (аналог Bad North): после уничтожения всех врагов автоматически
@@ -202,6 +155,7 @@ public class WaveManager : MonoBehaviour
 
             int healAmount = Mathf.Max(1, (int)(unit.maxHp * healPercent));
             unit.Heal(healAmount);
+            Debug.Log($"[Heal] {unit.name} вылечен на {healAmount} HP");
         }
     }
 
