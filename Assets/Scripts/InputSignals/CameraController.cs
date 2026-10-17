@@ -18,13 +18,13 @@ public class CameraController : MonoBehaviour
     public float rotationSpeed = 0.25f;
 
     [Tooltip("Градусы наклона по pitch на 1 единицу движения мыши по Y.")]
-    public float pitchSensitivity = 0.25f;
+    public float pitchSensitivity = 2.2f;
 
     [Tooltip("Минимальный pitch (градусы): почти горизонтальный взгляд. Не даёт камере уйти под землю.")]
-    public float minPitch = 20f;
+    public float minPitch = 15f;
 
     [Tooltip("Максимальный pitch (градусы): почти вид сверху. Не даёт камере перевернуться.")]
-    public float maxPitch = 80f;
+    public float maxPitch = 75f;
 
     [Header("Zoom (mouse wheel)")]
     [Tooltip("Множитель дистанции на одну «щелчок» колеса (>1: вверх — приближение, вниз — отдаление).")]
