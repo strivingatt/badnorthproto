@@ -13,8 +13,16 @@ public class GridManager : MonoBehaviour
     public int size = 24;
     public float cellSize = 1f;
 
-    /// <summary>Занятые клетки и юниты, которые их занимают.</summary>
-    private readonly Dictionary<Vector2Int, Unit> occupancy = new Dictionary<Vector2Int, Unit>();
+    /// <summary>
+    /// Занятые клетки и юниты, которые их занимают. В одной клетке может
+    /// оказаться НЕСКОЛЬКО юнитов: юниты не блокируют друг друга и проходят
+    /// сквозь товарищей, поэтому клетка хранит список, а не одного владельца.
+    /// Раньше здесь был Dictionary&lt;Vector2Int, Unit&gt;: вошедший вторым
+    /// перезаписывал запись первого, и тот «исчезал» из учёта — переставал
+    /// участвовать в бою и становился невидимым для ИИ, пока не сдвинется с места.
+    /// </summary>
+    private readonly Dictionary<Vector2Int, List<Unit>> occupancy
+        = new Dictionary<Vector2Int, List<Unit>>();
 
     /// <summary>Клетки, заблокированные для прохода/размещения.</summary>
     private readonly HashSet<Vector2Int> blocked = new HashSet<Vector2Int>();
@@ -66,10 +74,16 @@ public class GridManager : MonoBehaviour
         return cell.x >= 0 && cell.x < size && cell.y >= 0 && cell.y < size;
     }
 
-    /// <summary>Свободна ли клетка: в границах, не занята и не заблокирована.</summary>
+    /// <summary>Свободна ли клетка: в границах, не заблокирована и на ней нет юнитов.</summary>
     public bool IsFree(Vector2Int cell)
     {
-        return InBounds(cell) && !IsBlocked(cell) && !occupancy.ContainsKey(cell);
+        return InBounds(cell) && !IsBlocked(cell) && !HasOccupants(cell);
+    }
+
+    /// <summary>Стоит ли в клетке хотя бы один юнит.</summary>
+    private bool HasOccupants(Vector2Int cell)
+    {
+        return occupancy.TryGetValue(cell, out var units) && units.Count > 0;
     }
 
     /// <summary>Попытаться занять клетку юнитом. Возвращает false, если клетка недоступна или уже занята другим юнитом.</summary>
@@ -86,20 +100,27 @@ public class GridManager : MonoBehaviour
             return false;
         }
 
-        if (occupancy.TryGetValue(cell, out var existing))
+        if (occupancy.TryGetValue(cell, out var units) && units.Count > 0)
         {
             // Клетка уже занята этим же юнитом — ок, иначе отказ.
-            return existing == unit;
+            return units.Contains(unit);
         }
 
-        occupancy[cell] = unit;
+        AddToCell(cell, unit);
         return true;
     }
 
-    /// <summary>Освободить клетку от указанного юнита.</summary>
+    /// <summary>Освободить клетку от указанного юнита (остальные юниты в клетке остаются).</summary>
     public void Free(Vector2Int cell, Unit unit)
     {
-        if (occupancy.TryGetValue(cell, out var occupant) && occupant == unit)
+        if (!occupancy.TryGetValue(cell, out var units))
+        {
+            return;
+        }
+
+        units.Remove(unit);
+
+        if (units.Count == 0)
         {
             occupancy.Remove(cell);
         }
@@ -117,20 +138,54 @@ public class GridManager : MonoBehaviour
         }
     }
 
-    /// <summary>Вернуть юнита, занимающего клетку (null, если клетка свободна).</summary>
+    /// <summary>
+    /// Основной юнит клетки (первый, кто её занял) — для выделения мышью.
+    /// null, если клетка свободна.
+    /// </summary>
     public Unit GetOccupant(Vector2Int cell)
     {
-        occupancy.TryGetValue(cell, out var unit);
-        return unit;
+        return occupancy.TryGetValue(cell, out var units) && units.Count > 0 ? units[0] : null;
+    }
+
+    /// <summary>
+    /// ВСЕ юниты клетки — их может быть несколько, если один прошёл сквозь другого.
+    /// Нужно боевой системе: иначе второй юнит в клетке неуязвим.
+    /// Возвращает null, если клетка пуста. Список внутренний — только для чтения.
+    /// </summary>
+    public IReadOnlyList<Unit> GetOccupants(Vector2Int cell)
+    {
+        return occupancy.TryGetValue(cell, out var units) ? units : null;
+    }
+
+    /// <summary>Занимает ли указанный юнит указанную клетку (для самовосстановления учёта).</summary>
+    public bool IsOccupiedBy(Vector2Int cell, Unit unit)
+    {
+        return occupancy.TryGetValue(cell, out var units) && units.Contains(unit);
     }
 
     /// <summary>
     /// Шаг 8: все юниты, зарегистрированные в occupancy (копия списка —
     /// безопасно итерировать, пока юниты умирают/перестраиваются).
+    /// Юнит может стоять в клетке не один, поэтому список «сплющивается» и
+    /// дедуплицируется: каждый живой юнит попадает в результат ровно один раз.
     /// </summary>
     public List<Unit> GetAllUnits()
     {
-        return new List<Unit>(occupancy.Values);
+        var result = new List<Unit>();
+        var seen = new HashSet<Unit>();
+
+        foreach (var units in occupancy.Values)
+        {
+            foreach (var unit in units)
+            {
+                if (unit != null && seen.Add(unit))
+                {
+                    result.Add(unit);
+                }
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Заблокирована ли клетка.</summary>
@@ -176,9 +231,35 @@ public class GridManager : MonoBehaviour
             );
         }
     }
+
+    /// <summary>
+    /// Зарегистрировать юнита в клетке, НЕ отбирая её у тех, кто уже там стоит.
+    /// Нужен при «проходе сквозь»: двое могут оказаться в одной клетке, и оба
+    /// должны оставаться в учёте — иначе юнит выпадает из GetAllUnits и
+    /// становится невидимым для боя и ИИ.
+    /// </summary>
     public void ForceOccupy(Vector2Int cell, Unit unit)
     {
-        if (!InBounds(cell)) return;
-        occupancy[cell] = unit;
+        if (unit == null || !InBounds(cell))
+        {
+            return;
+        }
+
+        AddToCell(cell, unit);
+    }
+
+    /// <summary>Добавить юнита в список клетки (без дублей, список создаётся по необходимости).</summary>
+    private void AddToCell(Vector2Int cell, Unit unit)
+    {
+        if (!occupancy.TryGetValue(cell, out var units))
+        {
+            units = new List<Unit>(1);
+            occupancy[cell] = units;
+        }
+
+        if (!units.Contains(unit))
+        {
+            units.Add(unit);
+        }
     }
 }

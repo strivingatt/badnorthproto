@@ -52,6 +52,13 @@ public class Unit : MonoBehaviour
     /// <summary>Оставшееся время до следующей атаки, секунд (тикает CombatResolver).</summary>
     public float cooldownTimer = 0f;
 
+    /// <summary>
+    /// Допуск при сравнении кулдауна с нулём: таймер уменьшается на tickInterval
+    /// (float), поэтому после «восьми тиков по 0.1» в нём может остаться ~1e-8.
+    /// Без допуска юнит изредка пропускал бы лишний тик.
+    /// </summary>
+    private const float CooldownEpsilon = 0.0001f;
+
     /// <summary>Материал вспышки при получении урона (назначается спавнером).</summary>
     public Material matHit;
 
@@ -292,25 +299,37 @@ public class Unit : MonoBehaviour
     /// Синхронизация логической позиции с фактической (БЕЗ физики): каждый
     /// FixedUpdate читаем клетку под transform.position и, если юнит вошёл в
     /// новую клетку, обновляем GridPos и occupancy. Юниты не блокируют друг
-    /// друга — клетка перезаписывается последним вошедшим.
+    /// друга, поэтому в одной клетке может оказаться несколько юнитов —
+    /// учёт хранит их списком (см. GridManager.occupancy).
     /// </summary>
     private void FixedUpdate()
     {
-        if (GridManager.Instance == null) return;
+        var gm = GridManager.Instance;
 
-        Vector2Int currentCell = GridManager.Instance.WorldToGrid(transform.position);
+        if (gm == null) return;
+
+        Vector2Int currentCell = gm.WorldToGrid(transform.position);
 
         // Deadzone: не фиксируем смену клетки, пока юнит не подъехал
         // достаточно близко к её центру.
-        Vector3 currentWorldPos = GridManager.Instance.GridToWorld(currentCell);
+        Vector3 currentWorldPos = gm.GridToWorld(currentCell);
         float distToCenter = Vector3.Distance(transform.position, currentWorldPos);
         if (distToCenter > 0.4f) return;
 
-        if (currentCell != GridPos && GridManager.Instance.InBounds(currentCell))
+        if (currentCell != GridPos && gm.InBounds(currentCell))
         {
-            GridManager.Instance.Free(GridPos, this);
-            GridManager.Instance.ForceOccupy(currentCell, this); // перезаписываем, кого там ни было
+            gm.Free(GridPos, this);
             GridPos = currentCell;
+            gm.ForceOccupy(GridPos, this);
+        }
+
+        // Самовосстановление учёта: живой юнит обязан быть зарегистрирован
+        // в своей клетке. Иначе он выпадает из GetAllUnits и становится
+        // невидимым для боя и ИИ (например, если CommandFormation освободил
+        // клетку, а путь к слоту не нашёлся).
+        if (gm.InBounds(GridPos) && !gm.IsOccupiedBy(GridPos, this))
+        {
+            gm.ForceOccupy(GridPos, this);
         }
     }
 
@@ -421,11 +440,17 @@ public class Unit : MonoBehaviour
     /// Попытка атаки: цели — активные враги команды в зоне атаки.
     /// Кулдаун запускается только при наличии целей; при успешной атаке
     /// дёргается триггер анимации "Attack".
+    ///
+    /// Проверка кулдауна обязательна ЗДЕСЬ: CombatResolver вызывает TryAttack
+    /// каждый боевой тик (0.1 с), поэтому без неё удар проходил 10 раз в секунду,
+    /// а attackCooldown вообще ни на что не влиял.
     /// </summary>
     public bool TryAttack()
     {
         var gm = GridManager.Instance;
         if (gm == null) return false;
+
+        if (cooldownTimer > CooldownEpsilon) return false;
 
         List<Unit> targets = new List<Unit>();
 
@@ -433,13 +458,22 @@ public class Unit : MonoBehaviour
         {
             if (!gm.InBounds(cell)) continue;
 
-            Unit occupant = gm.GetOccupant(cell);
+            IReadOnlyList<Unit> occupants = gm.GetOccupants(cell);
 
-            // Проверяем, что враг активен (not destroyed) — иначе мёртвый юнит
-            // мог формально оставаться в клетке.
-            if (occupant != null && occupant.team != this.team && occupant.gameObject != null)
+            if (occupants == null) continue;
+
+            // В клетке может стоять несколько юнитов («проход сквозь друг друга»),
+            // поэтому перебираем всех: иначе второй юнит в клетке неуязвим.
+            for (int i = 0; i < occupants.Count; i++)
             {
-                targets.Add(occupant);
+                Unit occupant = occupants[i];
+
+                // Проверяем, что враг активен (not destroyed) — иначе мёртвый юнит
+                // мог формально оставаться в клетке.
+                if (occupant != null && occupant.team != this.team && occupant.gameObject != null)
+                {
+                    targets.Add(occupant);
+                }
             }
         }
 
