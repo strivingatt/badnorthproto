@@ -111,6 +111,9 @@ public class Unit : MonoBehaviour
     /// <summary>Таймер пересчёта направления взгляда.</summary>
     private float facingUpdateTimer = 0f;
 
+    /// <summary>Авто-поворот только в бою: боевой радиус, клетки (Чебышёв).</summary>
+    private const int CombatFacingRange = 3;
+
     /// <summary>Интервал пересчёта направления, секунд (не каждый кадр).</summary>
     private const float FacingUpdateInterval = 0.2f;
 
@@ -270,18 +273,40 @@ public class Unit : MonoBehaviour
         return nearest;
     }
 
+    /// <summary>Боевой радиус авто-поворота, клеток (Чебышёв, Fix-2 п.2).</summary>
+    public const int AutoFaceCombatRange = CombatFacingRange;
+
     /// <summary>
-    /// Пересчитать направление взгляда: развернуть юнита лицом к ближайшему
-    /// врагу (если тот есть в радиусе обнаружения). Направление квантуется до
-    /// 8 секторов. Если врага нет — Facing не меняется.
+    /// Пересчитать направление взгляда (Fix-2, баг Б: перебивание facing'а
+    /// формации). Авто-поворот включается ТОЛЬКО в бою:
+    /// - юнит НЕ движется (IsMoving == false);
+    /// - есть живой враг в боевом радиусе (Чебышёв от GridPos <= 3).
+    /// Если условие не выполнено — Facing НЕ меняется (держится от последнего
+    /// приказа CommandFormation или предыдущего врага), поэтому направление
+    /// строя живёт дольше 0.2 с в покое.
+    /// Facing врагов ведёт ТОЛЬКО EnemyAI — для team != Player early-return.
+    /// Метрика унифицирована: везде Чебышёв max(|dx|,|dy|).
     /// </summary>
     public void UpdateFacing()
     {
-        Unit enemy = FindNearestEnemy();
+        // Facing врагов ведёт только EnemyAI (Fix-2, п.2): авто-поворот игрока
+        // не должен вмешиваться в поведение вражеских юнитов.
+        if (team != Team.Player)
+        {
+            return;
+        }
+
+        // Во время движения facing не трогаем — он задан приказом формации.
+        if (IsMoving)
+        {
+            return;
+        }
+
+        Unit enemy = FindNearestEnemyInCombatRange();
 
         if (enemy == null)
         {
-            return; // врагов рядом нет — сохраняем текущий Facing
+            return; // врага в боевом радиусе нет — сохраняем текущий Facing
         }
 
         Vector2Int dir = enemy.GridPos - GridPos;
@@ -306,6 +331,48 @@ public class Unit : MonoBehaviour
             Facing = newFacing;
             ApplyFacing();
         }
+    }
+
+    /// <summary>
+    /// Найти ближайшего живого врага в БОЕВОМ радиусе (Чебышёв <= 3, клетки).
+    /// Метрика — Чебышёв max(|dx|,|dy|), та же, что у EnemyAI (Fix-2, п.2:
+    /// унификация меры). Возвращает Unit или null.
+    /// </summary>
+    private Unit FindNearestEnemyInCombatRange()
+    {
+        var gm = GridManager.Instance;
+
+        if (gm == null)
+        {
+            return null;
+        }
+
+        Unit nearest = null;
+        int bestDist = int.MaxValue;
+
+        List<Unit> all = gm.GetAllUnits();
+
+        for (int i = 0; i < all.Count; i++)
+        {
+            Unit u = all[i];
+
+            if (u == null || u.gameObject == null || u.isDead || u.team == this.team)
+            {
+                continue;
+            }
+
+            int dx = Mathf.Abs(u.GridPos.x - GridPos.x);
+            int dy = Mathf.Abs(u.GridPos.y - GridPos.y);
+            int dist = Mathf.Max(dx, dy); // Чебышёв
+
+            if (dist <= CombatFacingRange && dist < bestDist)
+            {
+                bestDist = dist;
+                nearest = u;
+            }
+        }
+
+        return nearest;
     }
 
     /// <summary>
@@ -662,6 +729,39 @@ public class Unit : MonoBehaviour
         if (path == null)
         {
             Debug.LogWarning($"[Unit] StartMove: путь недоступен ({fromCell} -> {targetCell}) — " +
+                             $"юнит {name} остаётся на месте.", this);
+            IsMoving = false;
+            return;
+        }
+
+        if (moveCoroutine != null)
+        {
+            StopCoroutine(moveCoroutine);
+        }
+
+        lastGridPos = fromCell;
+
+        moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
+    }
+
+    /// <summary>
+    /// Запустить перемещение по УЖЕ РАССЧИТАННОМУ пути A* (Fix-2, баг А):
+    /// путь построен в Squad.CommandFormation (проход 0) ДО освобождения
+    /// клеток, поэтому повторный A* здесь не нужен и юнит гарантированно
+    /// не остаётся «призраком» (клетка освобождена только для валидного пути).
+    /// Стартовая клетка передаётся ЯВНО (для lastGridPos/страховки).
+    /// </summary>
+    public void StartMoveAlongPath(List<Vector2Int> path, Vector2Int fromCell, Vector2Int targetCell)
+    {
+        if (GridManager.Instance == null)
+        {
+            Debug.LogError("[Unit] StartMoveAlongPath: GridManager.Instance == null — движение отменено.", this);
+            return;
+        }
+
+        if (path == null || path.Count == 0)
+        {
+            Debug.LogWarning($"[Unit] StartMoveAlongPath: пустой путь ({fromCell} -> {targetCell}) — " +
                              $"юнит {name} остаётся на месте.", this);
             IsMoving = false;
             return;

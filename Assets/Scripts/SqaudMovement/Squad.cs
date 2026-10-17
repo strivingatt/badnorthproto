@@ -40,6 +40,16 @@ public class Squad : MonoBehaviour
     /// Manhattan-расстоянию через SlotAssigner.Assign) и запустить корутины
     /// перемещения.
     ///
+    /// ИЗМЕНЕНИЕ (Fix-2, баг А — «призраки при null-пути»): добавлен ПРОХОД 0 —
+    /// расчёт путей A* для всех пар ДО освобождения клеток. Раньше проход 1
+    /// (FreeUnit) освобождал клетки ВСЕХ пар до проверки путей: если A* внутри
+    /// StartMove возвращал null (слот под камнем/заблокирован/вне границ), юнит
+    /// оставался стоять без регистрации в occupancy — «призрак»: не в
+    /// GetAllUnits(), не атакует, не виден как цель. Теперь пары с null-путём
+    /// исключаются полностью: их клетки НЕ освобождаются, движение НЕ запускается,
+    /// логируется warning. Инвариант: каждый живой юнит команды либо успешно
+    /// стартовал, либо остался на своей клетке СОХРАНЯЯ регистрацию в occupancy.
+    ///
     /// ИЗМЕНЕНИЕ (исправление бага «урон до подхода»): целевая клетка НЕ
     /// резервируется заранее — TryOccupy(slot, unit) из этого метода УБРАН, вместе
     /// с блоком отката при занятом слоте. Почему:
@@ -86,45 +96,71 @@ public class Squad : MonoBehaviour
 
         var pairs = SlotAssigner.Assign(aliveUnits, slots);
 
-        // Проход 1 (часть «Free»): освобождаем СТАРЫЕ клетки ВСЕХ назначенных
-        // юнитов. Именно все сразу — иначе перестановка местами внутри отряда
-        // упёрлась бы в ещё не освобождённые клетки товарищей (FixedUpdate не
-        // пустил бы юнита в занятую клетку и откатил бы его назад).
-        foreach (var pair in pairs)
-        {
-            GridManager.Instance.FreeUnit(pair.unit);
-        }
+        // Проход 0 (Fix-2, баг А): расчёт путей A* ДО освобождения клеток.
+        // Пары с null-путём (слот под камнем / заблокирован / вне границ)
+        // исключаются полностью: их клетки не освобождаются в проходе 1,
+        // движение не запускается в проходе 2 — юнит остаётся на своей клетке
+        // с сохранённой регистрацией в occupancy (не становится «призраком»).
+        var validPairs = new List<(Unit unit, Vector2Int slot, Vector2Int oldPos, List<Vector2Int> path)>(pairs.Count);
 
-        // Проход 2 (движение): запускаем корутины.
-        //
-        // ВАЖНО: Целевая клетка НЕ резервируется заранее (TryOccupy здесь УБРАН) —
-        // FixedUpdate займёт её, когда юнит физически дойдёт. Это предотвращает
-        // атаки по юниту, который ещё в пути («урон до подхода»).
-        // unit.GridPos здесь тоже НЕ обновляется: его ведёт FixedUpdate по
-        // фактическому transform.position.
         foreach (var pair in pairs)
         {
             Unit unit = pair.unit;
-            Vector2Int slot = pair.slot;
 
-            // Дополнительная страховка от мёртвых юнитов: если объект успел быть
-            // уничтожен между фильтром и этим моментом — пропускаем назначение.
+            // Страховка от уничтожения между фильтром и этим моментом.
             if (unit == null || unit.gameObject == null)
             {
                 continue;
             }
 
             // ФАКТИЧЕСКАЯ стартовая позиция юнита на момент приказа — она же
-            // start для A* и точка отката при логической коллизии (lastGridPos).
+            // start для A* (путь строим ЗДЕСЬ, до FreeUnit, от реального положения).
             Vector2Int oldPos = unit.GridPos;
+
+            List<Vector2Int> path = Pathfinding.AStar(oldPos, pair.slot);
+
+            if (path == null)
+            {
+                Debug.LogWarning($"[Squad] CommandFormation: путь недоступен " +
+                                 $"({oldPos} -> {pair.slot}) — юнит {unit.name} " +
+                                 $"остаётся на месте, слот пропущен.");
+                continue;
+            }
+
+            validPairs.Add((unit, pair.slot, oldPos, path));
+        }
+
+        // Проход 1 (часть «Free»): освобождаем СТАРЫЕ клетки только пар с
+        // валидным путём. Именно все сразу — иначе перестановка местами внутри
+        // отряда упёрлась бы в ещё не освобождённые клетки товарищей (FixedUpdate
+        // не пустил бы юнита в занятую клетку и откатил бы его назад).
+        foreach (var entry in validPairs)
+        {
+            GridManager.Instance.FreeUnit(entry.unit);
+        }
+
+        // Проход 2 (движение): запускаем корутины по уже рассчитанным путям
+        // (повторный A* внутри StartMove не требуется — путь валиден из прохода 0).
+        //
+        // ВАЖНО: Целевая клетка НЕ резервируется заранее (TryOccupy здесь УБРАН) —
+        // FixedUpdate займёт её, когда юнит физически дойдёт. Это предотвращает
+        // атаки по юниту, который ещё в пути («урон до подхода»).
+        // unit.GridPos здесь тоже НЕ обновляется: его ведёт FixedUpdate по
+        // фактическому transform.position.
+        foreach (var entry in validPairs)
+        {
+            Unit unit = entry.unit;
+            Vector2Int slot = entry.slot;
+            Vector2Int oldPos = entry.oldPos;
 
             unit.Facing = facing;
             // Визуализация направления: поворот юнита (локальный +Z вдоль Facing)
             // сразу после установки Facing — «нос» смотрит туда же, куда строй.
             unit.ApplyFacing();
-            unit.StartMove(oldPos, slot);
+            unit.StartMoveAlongPath(entry.path, oldPos, slot);
         }
 
-        Debug.Log($"[Squad] CommandFormation: выполнено — пар {pairs.Count}, facing = {facing}.");
+        Debug.Log($"[Squad] CommandFormation: выполнено — пар с валидным путём {validPairs.Count} " +
+                  $"(из {pairs.Count}), facing = {facing}.");
     }
 }
