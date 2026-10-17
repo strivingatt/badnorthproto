@@ -146,6 +146,19 @@ public class InputController : MonoBehaviour
             Formation.SelfTest();
         }
 
+        // --- E: запуск первой волны через WaveManager (контроль старта игры) ---
+        if (Input.GetKeyDown(KeyCode.E))
+        {
+            if (WaveManager.Instance != null)
+            {
+                WaveManager.Instance.StartNextWave();
+            }
+            else
+            {
+                Debug.LogWarning("[InputController] WaveManager.Instance == null — волна не запущена.");
+            }
+        }
+
         // --- ПКМ: решение принимается на ОТПУСКАНИИ (клик vs вращение камеры) ---
         // На нажатии только запоминаем позицию мыши и признак удержания.
         // Никаких чтений флагов из CameraController — логика самодостаточна.
