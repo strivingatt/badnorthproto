@@ -53,6 +53,17 @@ public class Unit : MonoBehaviour
     public float cooldownTimer = 0f;
 
     /// <summary>
+    /// Флаг смерти (Fix-1, баг В): Destroy(gameObject) отложен до конца кадра,
+    /// поэтому при двух ударах в одном боевом тике Die() мог сработать дважды
+    /// (двойной лог смерти, повторный Squad.Remove). Все боевые входы
+    /// (TakeDamage / TryAttack / Die) проверяют этот флаг.
+    /// </summary>
+    private bool isDead = false;
+
+    /// <summary>Жив ли юнит (только чтение извне — для ИИ и боевых систем).</summary>
+    public bool IsDead => isDead;
+
+    /// <summary>
     /// Допуск при сравнении кулдауна с нулём: таймер уменьшается на tickInterval
     /// (float), поэтому после «восьми тиков по 0.1» в нём может остаться ~1e-8.
     /// Без допуска юнит изредка пропускал бы лишний тик.
@@ -214,7 +225,8 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Найти ближайшего живого врага (team != this.team) в радиусе detectionRange.
-    /// Расстояние считаем в клетках (евклидово, целочисленно — без GridToWorld).
+    /// Расстояние считаем в клетках метрикой Чебышёва max(|dx|,|dy|) (Fix-1, п.4:
+    /// унификация меры с EnemyAI — «сосед по диагонали» = 1, а не 2).
     /// Возвращает Unit или null.
     /// </summary>
     public Unit FindNearestEnemy()
@@ -227,7 +239,7 @@ public class Unit : MonoBehaviour
         }
 
         Unit nearest = null;
-        float bestDistSqr = detectionRange * detectionRange;
+        int bestDist = int.MaxValue;
 
         List<Unit> all = gm.GetAllUnits();
 
@@ -235,21 +247,22 @@ public class Unit : MonoBehaviour
         {
             Unit u = all[i];
 
-            // Мёртвый/уничтоженный юнит (unity-null) или своя команда — пропускаем.
-            if (u == null || u.gameObject == null || u.team == this.team)
+            // Мёртвый/уничтоженный юнит (unity-null или флаг isDead — Destroy
+            // отложен до конца кадра) или своя команда — пропускаем.
+            if (u == null || u.gameObject == null || u.isDead || u.team == this.team)
             {
                 continue;
             }
 
-            // Расстояние в клетках (целочисленно). detectionRange трактуется
-            // в клетках, а не в мировых единицах — не зависит от cellSize.
-            int dx = u.GridPos.x - GridPos.x;
-            int dy = u.GridPos.y - GridPos.y;
-            float distSqr = dx * dx + dy * dy;
+            // Расстояние в клетках (Чебышёв, целочисленно). detectionRange
+            // трактуется в клетках, а не в мировых единицах — не зависит от cellSize.
+            int dx = Mathf.Abs(u.GridPos.x - GridPos.x);
+            int dy = Mathf.Abs(u.GridPos.y - GridPos.y);
+            int dist = Mathf.Max(dx, dy);
 
-            if (distSqr < bestDistSqr)
+            if (dist <= detectionRange && dist < bestDist)
             {
-                bestDistSqr = distSqr;
+                bestDist = dist;
                 nearest = u;
             }
         }
@@ -416,21 +429,47 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Клетки зоны атаки: 3 клетки фронта прямо перед юнитом
-    /// (центр — GridPos + Facing, плюс ±1 по перпендикуляру «вправо»).
-    ///
-    /// Пример расчёта для Facing=(0,1): right = (Facing.y, -Facing.x) = (1,0);
-    /// клетки: (x-1,y+1), (x,y+1), (x+1,y+1) — столбец на y+1 шириной 3.
+    /// Таблица целочисленных поворотов направлений сетки на ±45° (Fix-1, баг А).
+    /// Ключ — направление (8 допустимых векторов), значение — {ccw45, cw45}.
+    /// Порядок пар согласован с Sectors (обход против часовой): ccw = следующий
+    /// по массиву, cw = предыдущий.
     /// </summary>
-    public List<Vector2Int> GetAttackCells()
+    private static readonly Dictionary<Vector2Int, (Vector2Int ccw45, Vector2Int cw45)> Rot45 =
+        new Dictionary<Vector2Int, (Vector2Int, Vector2Int)>
     {
-        Vector2Int right = new Vector2Int(Facing.y, -Facing.x); // перпендикуляр вправо
-        List<Vector2Int> cells = new List<Vector2Int>();
+        { new Vector2Int( 0,  1), (new Vector2Int(-1,  1), new Vector2Int( 1,  1)) }, // N  -> NW / NE
+        { new Vector2Int( 1,  1), (new Vector2Int( 0,  1), new Vector2Int( 1,  0)) }, // NE -> N  / E
+        { new Vector2Int( 1,  0), (new Vector2Int( 1,  1), new Vector2Int( 1, -1)) }, // E  -> NE / SE
+        { new Vector2Int( 1, -1), (new Vector2Int( 1,  0), new Vector2Int( 0, -1)) }, // SE -> E  / S
+        { new Vector2Int( 0, -1), (new Vector2Int( 1, -1), new Vector2Int(-1, -1)) }, // S  -> SE / SW
+        { new Vector2Int(-1, -1), (new Vector2Int( 0, -1), new Vector2Int(-1,  0)) }, // SW -> S  / W
+        { new Vector2Int(-1,  0), (new Vector2Int(-1, -1), new Vector2Int(-1,  1)) }, // W  -> SW / NW
+        { new Vector2Int(-1,  1), (new Vector2Int(-1,  0), new Vector2Int( 0,  1)) }, // NW -> W  / N
+    };
 
-        for (int r = -1; r <= 1; r++)
+    /// <summary>
+    /// Клетки зоны атаки (Fix-1, баг А): множество {F, rot45cw(F), rot45ccw(F)},
+    /// где F = Facing — три СМЕЖНЫЕ клетки (фронт шириной 3 по 8-соседству).
+    /// Реализовано целочисленной таблицей поворотов на 45°, а НЕ перпендикуляром
+    /// right = (Facing.y, -Facing.x): для диагоналей перпендикуляр давал неверную
+    /// зону (0,2),(1,1),(2,0) — удар через клетку без ортогональных соседей.
+    /// Пример для Facing=(1,1): {(1,0), (1,1), (0,1)} + GridPos.
+    /// Осевые направления дают ту же зону, что и прежняя логика.
+    /// </summary>
+    private List<Vector2Int> GetAttackCells()
+    {
+        List<Vector2Int> cells = new List<Vector2Int>(3);
+
+        if (Rot45.TryGetValue(Facing, out var pair))
         {
-            Vector2Int cell = GridPos + Facing * 1 + right * r;
-            cells.Add(cell);
+            cells.Add(GridPos + Facing);      // центр фронта
+            cells.Add(GridPos + pair.cw45);   // фланг по часовой
+            cells.Add(GridPos + pair.ccw45);  // фланг против часовой
+        }
+        else
+        {
+            // Facing вне таблицы 8 направлений (защита): бьём хотя бы прямо.
+            cells.Add(GridPos + Facing);
         }
 
         return cells;
@@ -447,6 +486,9 @@ public class Unit : MonoBehaviour
     /// </summary>
     public bool TryAttack()
     {
+        // Мёртвый юнит не атакует (Destroy отложен — объект жив до конца кадра).
+        if (isDead) return false;
+
         var gm = GridManager.Instance;
         if (gm == null) return false;
 
@@ -468,9 +510,10 @@ public class Unit : MonoBehaviour
             {
                 Unit occupant = occupants[i];
 
-                // Проверяем, что враг активен (not destroyed) — иначе мёртвый юнит
-                // мог формально оставаться в клетке.
-                if (occupant != null && occupant.team != this.team && occupant.gameObject != null)
+                // Проверяем, что враг активен (not destroyed и не умер) — иначе
+                // мёртвый юнит мог формально оставаться в клетке до конца кадра.
+                if (occupant != null && occupant.team != this.team &&
+                    occupant.gameObject != null && !occupant.isDead)
                 {
                     targets.Add(occupant);
                 }
@@ -505,6 +548,10 @@ public class Unit : MonoBehaviour
     /// </summary>
     public void TakeDamage(int dmg, Unit attacker)
     {
+        // Мёртвый юнит не получает урон (Fix-1, баг В): второй удар в том же
+        // тике не должен повторно списывать HP и звать Die().
+        if (isDead) return;
+
         hp -= dmg;
         Debug.Log($"[Combat] {name} получил {dmg} урона (HP: {hp}/{maxHp})");
 
@@ -571,6 +618,12 @@ public class Unit : MonoBehaviour
     /// </summary>
     public void Die()
     {
+        // Защита от двойной смерти (Fix-1, баг В): Destroy(gameObject) отложен
+        // до конца кадра, поэтому при двух ударах в одном тике Die() мог
+        // вызваться дважды (двойной лог, повторный Remove из Squad).
+        if (isDead) return;
+        isDead = true;
+
         Debug.Log($"[Combat] {name} погиб");
 
         if (flashCoroutine != null)
