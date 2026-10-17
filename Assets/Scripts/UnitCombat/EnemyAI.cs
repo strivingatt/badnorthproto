@@ -52,7 +52,7 @@ public class EnemyAI : MonoBehaviour
 {
     [Header("Detection")]
     /// <summary>Радиус обнаружения игрока, в клетках (Чебышёв).</summary>
-    public float detectionRange = 10f;
+    public float detectionRange = 50f;
 
     [Header("Engagement")]
     /// <summary>
