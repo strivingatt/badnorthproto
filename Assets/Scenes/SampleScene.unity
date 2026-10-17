@@ -148,7 +148,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b957e06cf89c5d049ac2cc23f58fae3f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GridManager
-  size: 30
+  size: 24
   cellSize: 1
 --- !u!4 &471832501
 Transform:
@@ -455,7 +455,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraController
   rotationSpeed: 2
-  dragThresholdPixels: 6
+  pitchSensitivity: 2.2
+  minPitch: 15
+  maxPitch: 75
   zoomSpeed: 1.1
   minZoom: 8
   maxZoom: 60
@@ -584,6 +586,7 @@ MonoBehaviour:
   spawner: {fileID: 0}
   gridRenderer: {fileID: 0}
   preview: {fileID: 1135970901}
+  rightMouseClickThresholdPixels: 6
 --- !u!4 &1239838682
 Transform:
   m_ObjectHideFlags: 0
