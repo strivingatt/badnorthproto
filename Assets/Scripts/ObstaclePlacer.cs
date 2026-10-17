@@ -8,6 +8,10 @@ using UnityEngine;
 /// Конфликт с обычным вводом решён просто: в InputController.Update первой
 /// строкой стоит if (Input.GetKey(KeyCode.B)) return; — пока активен режим
 /// камней, выделение отряда и drag формации не обрабатываются.
+///
+/// Ключевая клетка камня — нижний левый угол области N×N. Обратная карта
+/// cellToAnchor позволяет убрать камень кликом по ЛЮБОЙ его клетке
+/// (Fix-4, баг Б).
 /// </summary>
 public class ObstaclePlacer : MonoBehaviour
 {
@@ -21,17 +25,26 @@ public class ObstaclePlacer : MonoBehaviour
     /// <summary>Текущий размер камня (N×N клеток), управляется клавишами 1-5.</summary>
     private int rockSize = 1;
 
+    /// <summary>Клавиши выбора размера 1-5 (Fix-4, баг В: вместо Enum.Parse
+    /// каждый кадр — статический массив, индекс = размер минус один).</summary>
+    private static readonly KeyCode[] SizeKeys =
+    {
+        KeyCode.Alpha1, KeyCode.Alpha2, KeyCode.Alpha3, KeyCode.Alpha4, KeyCode.Alpha5,
+    };
+
     /// <summary>Математическая плоскость y = 0 для рейкаста мыши.</summary>
     private readonly Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
 
-    /// <summary>Какие камни стоят в каких клетках (нужно для удаления при toggle).</summary>
+    /// <summary>Какие камни стоят в каких клетках (ключ = якорная клетка камня).</summary>
     private readonly Dictionary<Vector2Int, GameObject> rocks = new Dictionary<Vector2Int, GameObject>();
 
-    /// <summary>Списки заблокированных клеток для каждого камня (ключ = клетка клика).</summary>
+    /// <summary>Списки заблокированных клеток для каждого камня (ключ = якорная клетка).</summary>
     private readonly Dictionary<Vector2Int, List<Vector2Int>> rockCells = new Dictionary<Vector2Int, List<Vector2Int>>();
 
-    /// <summary>Размер камня для каждой ключевой клетки (чтобы знать сколько клеток разблокировать).</summary>
-    private readonly Dictionary<Vector2Int, int> rockSizes = new Dictionary<Vector2Int, int>();
+    /// <summary>Обратная карта «любая клетка камня → якорь» (Fix-4, баг Б):
+    /// клик по не-якорной клетке многосотового камня находит запись и
+    /// корректно удаляет весь камень.</summary>
+    private readonly Dictionary<Vector2Int, Vector2Int> cellToAnchor = new Dictionary<Vector2Int, Vector2Int>();
 
     private Camera mainCamera;
 
@@ -58,12 +71,12 @@ public class ObstaclePlacer : MonoBehaviour
             return;
         }
 
-        // Выбор размера камня клавишами 1-5.
-        for (int i = 1; i <= 5; i++)
+        // Выбор размера камня клавишами 1-5 (статический массив — без Enum.Parse).
+        for (int i = 0; i < SizeKeys.Length; i++)
         {
-            if (Input.GetKeyDown((KeyCode)(System.Enum.Parse(typeof(KeyCode), "Alpha" + i))))
+            if (Input.GetKeyDown(SizeKeys[i]))
             {
-                rockSize = i;
+                rockSize = i + 1;
                 Debug.Log($"[ObstaclePlacer] Размер камня: {rockSize}");
                 break;
             }
@@ -107,6 +120,8 @@ public class ObstaclePlacer : MonoBehaviour
     /// <summary>
     /// Поставить камень размером N×N, начиная с клетки cell (нижний левый угол области).
     /// Проверяется доступность ВСЕХ N×N клеток; если хотя бы одна недоступна — отказ.
+    /// Все клетки камня заносятся в обратную карту cellToAnchor (ключ → якорь),
+    /// чтобы удаление работало кликом по любой клетке.
     /// </summary>
     private void PlaceRock(Vector2Int cell)
     {
@@ -159,43 +174,62 @@ public class ObstaclePlacer : MonoBehaviour
 
             if (renderer != null)
             {
-                renderer.material = matRock;
+                renderer.sharedMaterial = matRock; // shared — без создания инстанса (Fix-4, баг А аналог)
             }
         }
 
         rocks[cell] = rock;
         rockCells[cell] = cells;
-        rockSizes[cell] = n;
+
+        // Обратная карта: любая клетка камня знает свой якорь.
+        foreach (var c in cells)
+        {
+            cellToAnchor[c] = cell;
+        }
 
         Debug.Log($"[ObstaclePlacer] Камень {n}x{n} поставлен в клетку {cell}.");
     }
 
     /// <summary>
-    /// Убрать камень по его ключевой клетке: уничтожить GameObject и разблокировать
-    /// ВСЕ клетки этого камня.
+    /// Убрать камень по клетке клика: через обратную карту cellToAnchor находим
+    /// ЯКОРНУЮ клетку (клик может быть по любой клетке многосотового камня),
+    /// уничтожаем GameObject и разблокируем ВСЕ клетки камня.
+    /// Лог «Камень убран» печатается ТОЛЬКО при фактическом удалении записи
+    /// (Fix-4, баг Б): блокировка клетки юнитом или «сиротская» заблокированная
+    /// клетка без записи о камне ложного успеха не дают.
     /// </summary>
-    private void RemoveRock(Vector2Int cell)
+    private void RemoveRock(Vector2Int clickedCell)
     {
-        if (rocks.TryGetValue(cell, out var rock))
+        // Кликаем не-якорную клетку -> находим якорь камня.
+        if (!cellToAnchor.TryGetValue(clickedCell, out Vector2Int anchor))
         {
-            Destroy(rock);
-            rocks.Remove(cell);
+            Debug.LogWarning($"[ObstaclePlacer] Клетка {clickedCell} заблокирована, но камень по ней не найден — ничего не убрано.");
+            return;
         }
 
-        if (rockCells.TryGetValue(cell, out var cells))
+        bool removed = false;
+
+        if (rocks.TryGetValue(anchor, out var rock))
+        {
+            Destroy(rock);
+            rocks.Remove(anchor);
+            removed = true;
+        }
+
+        if (rockCells.TryGetValue(anchor, out var cells))
         {
             foreach (var c in cells)
             {
                 GridManager.Instance.SetBlocked(c, false);
+                cellToAnchor.Remove(c);
             }
-            rockCells.Remove(cell);
+            rockCells.Remove(anchor);
+            removed = true;
         }
 
-        if (rockSizes.ContainsKey(cell))
+        if (removed)
         {
-            rockSizes.Remove(cell);
+            Debug.Log($"[ObstaclePlacer] Камень убран (клик {clickedCell}, якорь {anchor}).");
         }
-
-        Debug.Log($"[ObstaclePlacer] Камень убран из клетки {cell}.");
     }
 }
