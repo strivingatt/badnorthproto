@@ -10,7 +10,7 @@ public class GridManager : MonoBehaviour
     public static GridManager Instance { get; private set; }
 
     [Header("Grid Settings")]
-    public int size = 24;
+    public int size = 36;
     public float cellSize = 1f;
 
     /// <summary>

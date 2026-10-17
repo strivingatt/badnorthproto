@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -126,9 +127,10 @@ public class SquadSpawner : MonoBehaviour
     }
 
     /// <summary>
-    /// Спавн волны врагов: count юнитов, спавн в несколько рядов (по 4 в ряду),
-    /// чтобы все помещались на сетке. Статы НЕ масштабируются — берутся из
-    /// префаба как есть (maxHp = 5).
+    /// Спавн волны врагов: count юнитов в СЛУЧАЙНЫХ клетках кольца шириной
+    /// edgeRingWidth клеток по периметру карты. Статы НЕ масштабируются —
+    /// берутся из префаба как есть (maxHp = 5). Каждый враг занимает
+    /// уникальную клетку: выбранная клетка исключается из пула кандидатов.
     /// </summary>
     public void SpawnWave(int count)
     {
@@ -147,24 +149,24 @@ public class SquadSpawner : MonoBehaviour
         var enemySquadGO = new GameObject("EnemySquad_Wave");
         var enemySquad = enemySquadGO.AddComponent<Squad>();
 
-        int baseX = 10;
-        int baseY = 4;
-        const int RowWidth = 4; // максимум врагов в одном ряду; дальше — новый ряд по Y
+        // Пул свободных клеток края: берём по одной случайной клетке на врага
+        // и удаляем её из пула — гарантируем, что никто не заспавнится друг на друге.
+        var edgePool = CollectEdgeCells();
 
         int spawned = 0;
 
         for (int i = 0; i < count; i++)
         {
-            Vector2Int cell = new Vector2Int(baseX + (i % RowWidth), baseY + (i / RowWidth));
+            Vector2Int? cell = PickRandomFromPool(edgePool);
 
-            if (!gm.IsFree(cell))
+            if (cell == null)
             {
-                Debug.LogWarning($"[SquadSpawner] Клетка {cell} занята/заблокирована — пропуск");
-                continue;
+                Debug.LogWarning($"[SquadSpawner] Край карты занят полностью — враг {i + 1}/{count} не заспавнен.");
+                break; // кандидаты кончились, остальных спавнить некуда
             }
 
             GameObject go = Instantiate(unitPrefab);
-            go.transform.position = gm.GridToWorld(cell);
+            go.transform.position = gm.GridToWorld(cell.Value);
 
             Unit unit = go.GetComponent<Unit>();
             if (unit == null) unit = go.AddComponent<Unit>();
@@ -173,14 +175,75 @@ public class SquadSpawner : MonoBehaviour
             unit.team = Team.Enemy;
             unit.Facing = new Vector2Int(0, 1);
             unit.matHit = matHit;
-            unit.Init(cell, enemySquad);       // сначала Init — строит кэш
-            unit.SetDefaultVisual(matEnemy);   // потом краска — кэш уже есть
+            unit.Init(cell.Value, enemySquad);   // сначала Init — строит кэш
+            unit.SetDefaultVisual(matEnemy);     // потом краска — кэш уже есть
 
             enemySquad.Add(unit);
             spawned++;
         }
 
-        Debug.Log($"[SquadSpawner] Волна: заспавнено {spawned}/{count} врагов");
+        Debug.Log($"[SquadSpawner] Волна: заспавнено {spawned}/{count} врагов (край карты, кольцо {edgeRingWidth} кл.)");
+    }
+
+    [Header("Edge Spawn")]
+    [Tooltip("Ширина кольца по периметру карты (клеток), внутри которого спавнятся враги волн.")]
+    public int edgeRingWidth = 3;
+
+    /// <summary>
+    /// Собрать список всех СВОБОДНЫХ клеток в кольце шириной edgeRingWidth
+    /// по периметру карты: x < ring, x >= size-ring, y < ring или y >= size-ring.
+    /// Исключаются занятые (GetOccupant != null) и заблокированные клетки.
+    /// </summary>
+    private List<Vector2Int> CollectEdgeCells()
+    {
+        var result = new List<Vector2Int>();
+        var gm = GridManager.Instance;
+        if (gm == null) return result;
+
+        int ring = Mathf.Max(1, edgeRingWidth);
+        int size = gm.size;
+
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                bool onEdge = x < ring || x >= size - ring || y < ring || y >= size - ring;
+                if (!onEdge) continue;
+
+                var cell = new Vector2Int(x, y);
+
+                if (gm.GetOccupant(cell) != null || gm.IsBlocked(cell))
+                {
+                    continue;
+                }
+
+                result.Add(cell);
+            }
+        }
+
+        if (result.Count == 0)
+        {
+            Debug.LogWarning("[SquadSpawner] Нет свободных клеток в кольце спавна по краю карты.");
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Взять случайную клетку из пула и УДАЛИТЬ её из пула (чтобы следующий
+    /// враг не занял ту же клетку). null, если пуст — край весь занят.
+    /// </summary>
+    private static Vector2Int? PickRandomFromPool(List<Vector2Int> pool)
+    {
+        if (pool == null || pool.Count == 0)
+        {
+            return null;
+        }
+
+        int index = Random.Range(0, pool.Count);
+        Vector2Int cell = pool[index];
+        pool.RemoveAt(index); // swap-remove: O(1), порядок не важен
+        return cell;
     }
 
     /// <summary>
