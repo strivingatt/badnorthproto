@@ -112,8 +112,6 @@ public class Unit : MonoBehaviour
     private float facingUpdateTimer = 0f;
 
     /// <summary>Авто-поворот только в бою: боевой радиус, клетки (Чебышёв).</summary>
-    // Боевой радиус авто-поворота (клетки, Чебышёв). По просьбе пользователя
-    // увеличен с 3 до 6 (3 оказалось мало). Значение для будущих правок.
     private const int CombatFacingRange = 6;
 
     /// <summary>Интервал пересчёта направления, секунд (не каждый кадр).</summary>
