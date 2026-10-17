@@ -17,6 +17,14 @@ using UnityEngine;
 ///    со скоростью unit.moveSpeed, дедзона 0.01f, финальный snap в центр
 ///    целевой клетки. В саму клетку цели путь НЕ строится — это исключает
 ///    ситуацию «два юнита в одной клетке».
+///    РЕЕСТР КЛЕЙМОВ (фикс «слияния врагов»): несколько врагов, преследующих
+///    одну цель, раньше выбирали одну и ту же свободную смежную клетку и
+///    въезжали в неё вдвоём. Теперь целевая клетка ТЕКУЩЕГО движения
+///    «заклеймляется» в статическом множестве claimedCells, общем для всех
+///    экземпляров EnemyAI: кандидат, уже выбранный другим врагом, отбрасывается.
+///    Реестр НЕ является частью occupancy и НЕ влияет на бой (зоны атаки,
+///    GetAllUnits, кулдаун его не видят). Клейм освобождается при достижении
+///    цели, при новом пересчёте пути и в OnDestroy (покрывает смерть юнита).
 /// 3. Если цель в зоне поражения (Чебышёв <= attackRange, т.е. смежность по
 ///    8 направлениям) — останавливаемся (MoveTowards НЕ вызываем) и смотрим
 ///    на цель (Facing + ApplyFacing); атаку выполняет CombatResolver,
@@ -81,6 +89,18 @@ public class EnemyAI : MonoBehaviour
     /// <summary>Минимальный интервал между логами «путь недоступен», секунд.</summary>
     private const float PATH_FAIL_LOG_INTERVAL = 5f;
 
+    /// <summary>
+    /// Общий реестр «заклеймленных» целевых клеток движения (фикс слияния врагов).
+    /// Клейм = клетка, которую враг выбрал целью ТЕКУЩЕГО движения. Реестр НЕ
+    /// является частью occupancy и НЕ влияет на бой: зоны атаки, GetAllUnits и
+    /// кулдаун его не видят — это только координация выбора цели движения между
+    /// экземплярами EnemyAI.
+    /// </summary>
+    private static readonly HashSet<Vector2Int> claimedCells = new HashSet<Vector2Int>();
+
+    /// <summary>Собственный текущий клейм этого врага (null — не заклеймлено).</summary>
+    private Vector2Int? myClaimedCell = null;
+
     private void Awake()
     {
         unit = GetComponent<Unit>();
@@ -97,6 +117,39 @@ public class EnemyAI : MonoBehaviour
         // выставляет IsMoving=true при старте своей корутины и false при остановке
         // (семантика поля согласована с Unit).
         unit.IsMoving = false;
+    }
+
+    /// <summary>
+    /// Уничтожение компонента (в т.ч. смерть юнита — Destroy в Unit.Die):
+    /// освобождаем собственный клейм, чтобы клетка не осталась «виртуально
+    /// занятой» для других врагов навсегда.
+    /// </summary>
+    private void OnDestroy()
+    {
+        ReleaseClaim();
+    }
+
+    /// <summary>
+    /// Освободить собственный предыдущий клейм из общего реестра (если есть).
+    /// Вызывается перед новым выбором цели движения, при достижении цели и в OnDestroy.
+    /// </summary>
+    private void ReleaseClaim()
+    {
+        if (myClaimedCell.HasValue)
+        {
+            claimedCells.Remove(myClaimedCell.Value);
+            myClaimedCell = null;
+        }
+    }
+
+    /// <summary>
+    /// Заклеймить выбранную цель движения за собой.
+    /// </summary>
+    private void SetClaim(Vector2Int cell)
+    {
+        ReleaseClaim();
+        claimedCells.Add(cell);
+        myClaimedCell = cell;
     }
 
     private void Update()
@@ -200,9 +253,14 @@ public class EnemyAI : MonoBehaviour
     /// движения. В саму клетку цели путь НЕ строится (Fix-1, баг Б): иначе
     /// враг залезал в занятую клетку — два юнита в одной клетке, нулевой вектор
     /// направления, никто не бьёт. Проходимость клеток ведёт Pathfinding.
-    /// Если все 8 соседних клеток заняты/заблокированы — пробуем путь к самой
-    /// цели как fallback (прежнее поведение). Пути нет — стоим на месте;
-    /// попробуем снова на следующем пересчёте.
+    ///
+    /// РЕЕСТР КЛЕЙМОВ: кандидат additionally отфильтровывается по признаку
+    /// «не заклеймлена другим врагом как цель его текущего движения» — иначе
+    /// несколько врагов выбирали одну и ту же свободную клетку и въезжали в неё
+    /// вдвоём (слияние). Если подходящего кандидата нет — враг остаётся на месте
+    /// в этот тик пересчёта (без fallback-пути в клетку цели и без входа в
+    /// занятую клетку); попробует снова на следующем пересчёте.
+    /// Перед новым выбором освобождается предыдущий собственный клейм.
     ///
     /// Анти-спам (п.4 правок): warning о недоступном пути печатается не чаще
     /// одного раза в PATH_FAIL_LOG_INTERVAL (5 сек) на одного врага — иначе при
@@ -216,17 +274,32 @@ public class EnemyAI : MonoBehaviour
             return;
         }
 
-        Vector2Int goal = FindAdjacentFreeCell(target.GridPos);
+        // П.2 ТЗ: перед новым выбором освобождаем свой предыдущий клейм.
+        // NB: только клейм, НЕ StopMovement() — иначе остановка активной
+        // корутины на середине пути оставила бы трансформ между клетками
+        // (snap не выполнен). Клейм переставляется в SetClaim при старте.
+        ReleaseClaim();
 
-        // Fallback: ни одна смежная с целью клетка не свободна — идём к цели
-        // (как раньше; Unit.FixedUpdate при «логической коллизии» не даст
-        // встать в занятую клетку навсегда).
-        if (goal == target.GridPos)
+        Vector2Int? goal = FindAdjacentFreeCell(target.GridPos);
+
+        if (goal == null)
         {
-            Debug.Log($"[EnemyAI] {unit.name}: у цели {target.GridPos} нет свободной смежной клетки — путь к самой цели.");
+            // П.3 ТЗ: ни одна смежная с целью клетка не подошла (вне границ /
+            // камень / занята / заклеймена другим врагом) — стоим на месте.
+            // Вход в клетку цели и в занятую клетку ЗАПРЕЩЁН.
+            if (Time.time - lastPathFailLogTime >= PATH_FAIL_LOG_INTERVAL)
+            {
+                lastPathFailLogTime = Time.time;
+                Debug.LogWarning($"[EnemyAI] {unit.name}: у цели {target.name} нет свободной " +
+                                 "незаклеймленной смежной клетки — стоим на месте, " +
+                                 "пересчёт в следующем тике.");
+            }
+
+            StopMovement();
+            return;
         }
 
-        List<Vector2Int> newPath = Pathfinding.AStar(unit.GridPos, goal);
+        List<Vector2Int> newPath = Pathfinding.AStar(unit.GridPos, goal.Value);
 
         if (newPath == null)
         {
@@ -245,21 +318,23 @@ public class EnemyAI : MonoBehaviour
         path = newPath;
 
         // Единая точка запуска движения: стоп старой корутины -> старт новой.
-        StartMovement(path[path.Count - 1]);
+        StartMovement(goal.Value);
     }
 
     /// <summary>
     /// Выбрать цель пути: из 8 клеток, смежных с целью (Чебышёв = 1 от
-    /// targetCell), берём СВОБОДНУЮ (в границах, не заблокирована, без чужих
-    /// юнитов), ближайшую к нам по Чебышёву. Если таких нет — возвращаем
-    /// targetCell (fallback для RepathToTarget). Клетка самого юнита в
-    /// рассмотрение не входит.
+    /// targetCell), берём ближайшую к нам по Чебышёву среди подходящих:
+    /// в границах, не заблокирована (stone), GetOccupant == null,
+    /// НЕ заклеймлена другим врагом как цель его текущего движения.
+    /// Подходящих нет — возвращаем null (враг стоит на месте; в клетку цели
+    /// и в занятую клетку входить запрещено). Клетка самого юнита в
+    /// рассмотрение не входит (мы там уже стоим).
     /// </summary>
-    private Vector2Int FindAdjacentFreeCell(Vector2Int targetCell)
+    private Vector2Int? FindAdjacentFreeCell(Vector2Int targetCell)
     {
         var gm = GridManager.Instance;
 
-        Vector2Int best = targetCell;
+        Vector2Int? best = null;
         int bestDist = int.MaxValue;
 
         for (int dx = -1; dx <= 1; dx++)
@@ -272,7 +347,13 @@ public class EnemyAI : MonoBehaviour
 
                 if (cell == unit.GridPos) continue; // мы там уже стоим
 
-                if (!gm.IsFree(cell)) continue; // вне сетки / камень / занят юнитом
+                if (!gm.InBounds(cell)) continue;   // вне сетки
+
+                if (gm.IsBlocked(cell)) continue;   // камень/препятствие
+
+                if (gm.GetOccupant(cell) != null) continue; // занят юнитом
+
+                if (claimedCells.Contains(cell)) continue;  // заклеймён другим врагом
 
                 int dist = DistanceInCells(unit.GridPos, cell);
 
@@ -300,6 +381,10 @@ public class EnemyAI : MonoBehaviour
             StopCoroutine(moveCoroutine);
         }
 
+        // Клейм выбранной цели движения за собой: другие враги при следующем
+        // выборе эту клетку не рассмотрят (фикс слияния врагов).
+        SetClaim(finalCell);
+
         // Согласование семантики IsMoving с Unit: ИИ движет юнитом — юнит «в пути».
         unit.IsMoving = true;
 
@@ -307,8 +392,12 @@ public class EnemyAI : MonoBehaviour
     }
 
     /// <summary>
-    /// Остановить движение: остановить корутину, сбросить путь, flag IsMoving.
+    /// Остановить движение: остановить корутину, сбросить путь, флаг IsMoving.
     /// Вызывается при вступлении в бой, потере цели и перед новым репатting'ом.
+    ///
+    /// ВАЖНО: движение остановлено -> цель движения больше не нужна.
+    /// Освобождаем клейм, чтобы другие враги могли занять эту клетку,
+    /// когда мы умрем или отойдем.
     /// </summary>
     private void StopMovement()
     {
@@ -324,22 +413,45 @@ public class EnemyAI : MonoBehaviour
         {
             unit.IsMoving = false;
         }
+
+        ReleaseClaim();
     }
 
     /// <summary>
     /// Корутина движения ПО КЛЕТКАМ пути — полный аналог Unit.MoveAlongPath:
     /// для каждой клетки пути while (Distance > 0.01f) MoveTowards к центру
     /// клетки со скоростью unit.moveSpeed, затем следующая. Единая дедзона
-    /// 0.01f (как у игрока), финальный snap в GridToWorld(finalCell).
-    /// Изменяется ТОЛЬКО transform.position — логическую позицию (GridPos /
-    /// occupancy) ведёт Unit.FixedUpdate, там же работает «логическая коллизия»
-    /// с занятыми клетками (откат к lastGridPos). GridPos здесь НЕ обновляем.
+    /// 0.01f (как у игрока). Изменяется ТОЛЬКО transform.position — логическую
+    /// позицию (GridPos / occupancy) ведёт Unit.FixedUpdate, там же работает
+    /// «логическая коллизия» с занятыми клетками (откат к lastGridPos).
+    /// GridPos здесь НЕ обновляем.
+    ///
+    /// СТРАХОВКА (п.5 ТЗ): проверяем занятость ПОСЛЕДНЕЙ клетки пути ДО того,
+    /// как в неё заехать; если она уже занята другим юнитом (кто-то успел встать
+    /// туда, пока мы шли) — прерываем цикл и остаёмся на последней пройденной
+    /// СВОБОДНОЙ клетке пути, а не в занятой. Иначе — финальный snap в центр
+    /// безопасной клетки.
+    /// При любом завершении корутины освобождаем собственный клейм (п.4 ТЗ:
+    /// движение закончено — цель движения больше не актуальна).
     /// </summary>
     private System.Collections.IEnumerator MoveAlongPath(Vector2Int finalCell)
     {
+        // Запоминаем текущую позицию как безопасную (на случай пустого пути)
+        Vector2Int lastFreeCell = unit.GridPos;
+
         for (int i = 0; i < path.Count; i++)
         {
-            Vector3 waypointPos = GridManager.Instance.GridToWorld(path[i]);
+            Vector2Int targetCell = path[i];
+
+            // Страховка: если это ПОСЛЕДНЯЯ клетка и она уже занята (кто-то въехал),
+            // прерываем цикл и остаёмся на предыдущей.
+            if (i == path.Count - 1 && GridManager.Instance.GetOccupant(targetCell) != null)
+            {
+                Debug.LogWarning($"[EnemyAI] {unit.name}: конечная клетка {targetCell} занята — остановка на {lastFreeCell}.");
+                break;
+            }
+
+            Vector3 waypointPos = GridManager.Instance.GridToWorld(targetCell);
 
             while (Vector3.Distance(transform.position, waypointPos) > 0.01f)
             {
@@ -351,11 +463,17 @@ public class EnemyAI : MonoBehaviour
 
                 yield return null;
             }
+
+            // Обновляем последнюю безопасную клетку только после успешного прибытия
+            lastFreeCell = targetCell;
         }
 
-        // Финальный snap в центр целевой клетки (как у игрока; GridPos зафиксирует
-        // FixedUpdate на следующем шаге).
-        transform.position = GridManager.Instance.GridToWorld(finalCell);
+        // Финальный snap в центр безопасной клетки
+        // (как у игрока; GridPos зафиксирует FixedUpdate на следующем шаге).
+        transform.position = GridManager.Instance.GridToWorld(lastFreeCell);
+
+        // П.4 ТЗ: движение завершено — наш клейм больше не нужен.
+        ReleaseClaim();
 
         moveCoroutine = null;
         unit.IsMoving = false;
