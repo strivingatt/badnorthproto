@@ -61,6 +61,15 @@ public class InputController : MonoBehaviour
     private List<Vector2Int> lastSlots;
     private Vector2Int lastFacing;
 
+    // Собственное состояние ПКМ (не зависит от CameraController и Script Execution Order):
+    // запоминаем позицию мыши в момент нажатия, решаем «клик или drag» в момент отпускания.
+    private bool rmbHeld;
+    private Vector3 rmbDownMousePos;
+
+    [Tooltip("Порог суммарного смещения мыши (пиксели) между нажатием и отпусканием ПКМ: " +
+             "меньше — клик (снятие выделения/отмена drag), больше — считалось вращением камеры.")]
+    public float rightMouseClickThresholdPixels = 6f;
+
     private void Awake()
     {
         if (Instance != null && Instance != this)
@@ -137,32 +146,44 @@ public class InputController : MonoBehaviour
             Formation.SelfTest();
         }
 
-        // --- ПКМ ---
-        // Короткий клик ПКМ (без заметного движения мыши) = отмена drag / снятие
-        // выделения, как раньше. Если CameraController уже определяет ПКМ-drag
-        // вращения (мышь сдвинулась за порог), клик-отмену не выполняем.
-        if (Input.GetMouseButtonDown(1) && !CameraController.IsRightMouseDragging)
+        // --- ПКМ: решение принимается на ОТПУСКАНИИ (клик vs вращение камеры) ---
+        // На нажатии только запоминаем позицию мыши и признак удержания.
+        // Никаких чтений флагов из CameraController — логика самодостаточна.
+        if (Input.GetMouseButtonDown(1))
         {
-            if (state == State.Dragging)
+            rmbHeld = true;
+            rmbDownMousePos = Input.mousePosition;
+        }
+
+        if (rmbHeld && Input.GetMouseButtonUp(1))
+        {
+            rmbHeld = false;
+
+            float mouseShift = Vector3.Distance(Input.mousePosition, rmbDownMousePos);
+
+            if (mouseShift < rightMouseClickThresholdPixels)
             {
-                // Отмена drag: превью скрывается, отряд остаётся выделенным.
-                if (preview != null)
+                // Короткий клик ПКМ без заметного движения = отмена drag / снятие выделения.
+                if (state == State.Dragging)
                 {
-                    preview.Hide();
+                    // Отмена drag: превью скрывается, отряд остаётся выделенным.
+                    if (preview != null)
+                    {
+                        preview.Hide();
+                    }
+
+                    lastSlots = null;
+                    state = State.Selected;
+                    Debug.Log("[InputController] Drag отменён (ПКМ).");
                 }
-
-                lastSlots = null;
-                state = State.Selected;
-                Debug.Log("[InputController] Drag отменён (ПКМ).");
+                else if (state == State.Selected)
+                {
+                    // Снятие выделения.
+                    SetSelection(null);
+                    state = State.Idle;
+                }
             }
-            else if (state == State.Selected)
-            {
-                // Снятие выделения.
-                SetSelection(null);
-                state = State.Idle;
-            }
-
-            return;
+            // Иначе это было вращение камеры — выделение НЕ трогаем.
         }
 
         // --- ЛКМ нажата ---
