@@ -1,23 +1,30 @@
 using UnityEngine;
 
 /// <summary>
-/// Управление камерой: орбитальное вращение по yaw (ПКМ + движение мыши по X)
-/// и зум колесом мыши вдоль текущего направления камеры.
+/// Управление камерой: орбитальное вращение по двум осям при зажатой ПКМ
+/// (горизонтальное движение мыши → yaw, вертикальное → pitch) и зум колесом
+/// мыши вдоль текущего направления камеры.
 /// Повешен на Main Camera. Никаких других осей движения нет:
-/// pitch (наклон ~60°), высота относительно pivot и позиция pivot по X/Z не меняются.
+/// высота относительно pivot и позиция pivot по X/Z не меняются.
 /// Pivot — точка на земле (y = 0), в которую камера смотрит в момент начала вращения.
-/// Конфликт с InputController решён через IsRightMouseDragging: короткий клик ПКМ
-/// без заметного движения мыши НЕ считается drag, отмена/снятие выделения работает как раньше.
+/// Pitch ограничен диапазоном [minPitch, maxPitch], чтобы камера не уходила под землю
+/// и не переворачивалась. Решение «клик ПКМ = снятие выделения» принимает сам
+/// InputController на отпускании кнопки — этот класс больше не экспортирует флагов.
 /// </summary>
 public class CameraController : MonoBehaviour
 {
-    [Header("Rotation (yaw, RMB + mouse X)")]
-    [Tooltip("Градусы поворота на 1 пиксель движения мыши по X.")]
+    [Header("Rotation (yaw/pitch, RMB + mouse)")]
+    [Tooltip("Градусы поворота по yaw на 1 единицу движения мыши по X.")]
     public float rotationSpeed = 0.25f;
 
-    [Tooltip("Порог накопленного смещения мыши по X (пиксели), после которого " +
-             "ПКМ-drag считается вращением. До него клик ПКМ остаётся «отменой» для InputController.")]
-    public float dragThresholdPixels = 6f;
+    [Tooltip("Градусы наклона по pitch на 1 единицу движения мыши по Y.")]
+    public float pitchSensitivity = 0.25f;
+
+    [Tooltip("Минимальный pitch (градусы): почти горизонтальный взгляд. Не даёт камере уйти под землю.")]
+    public float minPitch = 20f;
+
+    [Tooltip("Максимальный pitch (градусы): почти вид сверху. Не даёт камере перевернуться.")]
+    public float maxPitch = 80f;
 
     [Header("Zoom (mouse wheel)")]
     [Tooltip("Множитель дистанции на одну «щелчок» колеса (>1: вверх — приближение, вниз — отдаление).")]
@@ -35,32 +42,24 @@ public class CameraController : MonoBehaviour
     /// <summary>Дистанция камеры до pivot (подбирается под стартовую конфигурацию в Awake).</summary>
     private float distance;
 
-    /// <summary>Наклон камеры (Euler.x) — фиксируется в Awake и больше не меняется.</summary>
+    /// <summary>Наклон камеры (Euler.x) — стартует с текущего угла, меняется drag'ом ПКМ, clamp'ится [minPitch, maxPitch].</summary>
     private float pitch;
 
     /// <summary>Текущий угол рыскания (Euler.y).</summary>
     private float yaw;
 
-    private bool isRotating;          // идёт ли вращение сейчас (ПКМ зажата И порог превышен)
-    private bool rmbDown;             // зажата ли ПКМ в этом кадре
-    private float accumulatedMouseX;  // накопленная дельта мыши по X с момента нажатия ПКМ
+    private bool rmbDown; // зажата ли ПКМ в этом кадре (вращение применяется сразу, без порога)
 
     private Camera cam;
-
-    /// <summary>
-    /// True, если ПКМ зажата и мышь уже сдвинулась по X за порог — т.е. это drag
-    /// для вращения камеры, а не короткий клик-отмена. Читается InputController.
-    /// </summary>
-    public static bool IsRightMouseDragging { get; private set; }
 
     private void Awake()
     {
         cam = GetComponent<Camera>();
 
         // Фиксируем текущую конфигурацию камеры как начальную орбиту:
-        // наклон (pitch) берём из Euler.x, yaw — из Euler.y.
+        // наклон (pitch) берём из Euler.x (начальный pitch = текущий наклон), yaw — из Euler.y.
         Vector3 euler = transform.eulerAngles;
-        pitch = euler.x;
+        pitch = Mathf.Clamp(euler.x > 180f ? euler.x - 360f : euler.x, minPitch, maxPitch);
         yaw = euler.y;
 
         // Pivot — пересечение луча взгляда камеры с плоскостью y = 0.
@@ -99,12 +98,10 @@ public class CameraController : MonoBehaviour
             ApplyCameraTransform();
         }
 
-        // --- Вращение по yaw (ПКМ + движение мыши по X) ---
+        // --- Вращение по двум осям (ПКМ + движение мыши) ---
         if (Input.GetMouseButtonDown(1))
         {
             rmbDown = true;
-            isRotating = false;
-            accumulatedMouseX = 0f;
 
             // В момент начала потенциального вращения заново определяем pivot:
             // точка на земле, на которую камера смотрит сейчас.
@@ -119,34 +116,28 @@ public class CameraController : MonoBehaviour
         if (rmbDown && Input.GetMouseButton(1))
         {
             float dx = Input.GetAxis("Mouse X");
-            accumulatedMouseX += dx;
+            float dy = Input.GetAxis("Mouse Y");
 
-            if (!isRotating && Mathf.Abs(accumulatedMouseX) >= dragThresholdPixels)
-            {
-                // Порог превышен — теперь это drag-вращение.
-                isRotating = true;
-            }
+            // yaw: горизонтальное движение мыши → вращение вокруг Y (как раньше).
+            yaw += dx * rotationSpeed;
 
-            if (isRotating)
-            {
-                yaw += dx * rotationSpeed;
-                ApplyCameraTransform();
-            }
+            // pitch: вертикальное движение мыши → наклон по X.
+            // Инверсия ( -= ): движение мыши вверх наклоняет камеру вниз.
+            pitch -= dy * pitchSensitivity;
+            pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
+
+            ApplyCameraTransform();
         }
 
         if (Input.GetMouseButtonUp(1))
         {
             rmbDown = false;
-            isRotating = false;
-            accumulatedMouseX = 0f;
         }
-
-        IsRightMouseDragging = isRotating;
     }
 
     /// <summary>
-    /// Переставить камеру на сфере радиуса distance вокруг pivot с фиксированным
-    /// pitch и текущим yaw. Pivot, высота над ним и наклон не изменяются.
+    /// Переставить камеру на сфере радиуса distance вокруг pivot с текущими
+    /// pitch и yaw. Pivot и дистанция до него при вращении не изменяются.
     /// </summary>
     private void ApplyCameraTransform()
     {
