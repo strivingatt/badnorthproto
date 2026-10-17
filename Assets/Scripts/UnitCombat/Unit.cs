@@ -82,20 +82,18 @@ public class Unit : MonoBehaviour
     /// <summary>Дочерний объект-указатель направления («нос»).</summary>
     private Transform noseTransform;
 
-    /// <summary>Последняя зафиксированная клетка (для синхронизации GridPos без физики).</summary>
-    private Vector2Int lastGridPos;
-
     /// <summary>«Родной» материал юнита (белый у игроков, красный у врагов):
     /// запоминается при спавне, восстанавливается после снятия выделения.</summary>
     private Material defaultMaterial;
 
     /// <summary>
-    /// Пары «рендерер → его текущий оригинальный материал» для возврата
-    /// после вспышки урона. Строится в Init() через BuildRendererCache()
-    /// ПОСЛЕ создания носа; нос в кэш не входит.
+    /// Пары «рендерер → его оригинальный материал» для возврата после вспышки
+    /// урона. Строится в Init() через BuildRendererCache() ПОСЛЕ создания носа;
+    /// нос в кэш не входит. Инстанс материала создаётся один раз при построении
+    /// кэша (Fix-4, баг А) и переиспользуется всеми присваиваниями.
     /// </summary>
-    private readonly List<(Renderer renderer, Material original)> rendererCache
-        = new List<(Renderer, Material)>();
+    private readonly List<(Renderer renderer, Material original, Material instance)> rendererCache
+        = new List<(Renderer, Material, Material)>();
 
     /// <summary>
     /// Animator модели (может быть null — у старых префабов-кубов аниматора нет).
@@ -159,9 +157,6 @@ public class Unit : MonoBehaviour
         // Позиционируем трансформ в центр клетки.
         transform.position = GridManager.Instance.GridToWorld(cell);
 
-        // Фиксируем стартовую клетку для синхронизации позиции в FixedUpdate.
-        lastGridPos = cell;
-
         // Создаём «нос» child-объектом КОДОМ (не через префаб) — визуальный
         // указатель направления. ВАЖНО: до BuildRendererCache, чтобы нос
         // успел появиться и был отфильтрован по имени.
@@ -187,9 +182,16 @@ public class Unit : MonoBehaviour
 
     /// <summary>
     /// Собрать все рендереры модели (MeshRenderer, SkinnedMeshRenderer и т.п.),
-    /// исключив объект "Nose". Для каждого сохранить его sharedMaterial как
-    /// «оригинал» для возврата после вспышки урона.
-    /// includeInactive = true — на случай, если часть модели временно отключена.
+    /// исключив объект "Nose". Для каждого рендерера создаётся ОДИН material-
+    /// инстанс (Fix-4, баг А): присваивание renderer.material само по себе
+    /// клонирует материал на каждое обращение, поэтому копия создается ровно
+    /// один раз при построении кэша и закрепляется через sharedMaterial —
+    /// дальнейшие перекраски пишут в этот же инстанс (renderer.sharedMaterial),
+    /// новых копий НЕ появляется. В кэш сохраняются «оригинал» (родной
+    /// sharedMaterial до клонирования) и инстанс. Инстанс автоматически
+    /// высвобождается Unity вместе с рендерером при уничтожении GameObject
+    /// (см. OnDestroy). includeInactive = true — на случай, если часть модели
+    /// временно отключена.
     /// </summary>
     private void BuildRendererCache()
     {
@@ -204,7 +206,22 @@ public class Unit : MonoBehaviour
             // Исключаем нос (указатель направления) — он не перекрашивается.
             if (r.gameObject.name == "Nose") continue;
 
-            rendererCache.Add((r, r.sharedMaterial));
+            Material original = r.sharedMaterial;
+
+            if (original != null)
+            {
+                // Одноразовый клон: первое обращение к getter'у renderer.material
+                // после присваивания возвращает ту же копию (без нового клона).
+                r.material = original;
+                Material instance = r.material;
+                r.sharedMaterial = instance; // фиксируем инстанс для всех будущих записей
+                rendererCache.Add((r, original, instance));
+            }
+            else
+            {
+                // Материала нет — клонировать нечего; SetVisual запишет напрямую.
+                rendererCache.Add((r, null, null));
+            }
         }
 
         if (rendererCache.Count == 0)
@@ -448,9 +465,15 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Сменить материал у ВСЕХ рендереров кэша (тело + меч и т.п.).
+    /// Сменить визуальный цвет/текстуру у ВСЕХ рендереров кэша (тело + меч и т.п.).
     /// Обновляет «оригиналы» в кэше, чтобы вспышка урона возвращала актуальный
     /// цвет (например, после подсветки выделения).
+    /// Реализация (Fix-4, баг А): НЕ присваивает renderer.material — каждое
+    /// такое присваивание клонирует материал, и в бою со вспышками копия
+    /// накопилась бы на каждый удар. Вместо этого пишем свойства переданного
+    /// материала в УЖЕ СОЗДАННЫЙ инстанс рендерера (создаётся один раз в
+    /// BuildRendererCache). Если инстанса нет (рендерер был без материала) —
+    /// назначаем mat как sharedMaterial напрямую (без клонирования).
     /// </summary>
     public void SetVisual(Material mat)
     {
@@ -462,14 +485,43 @@ public class Unit : MonoBehaviour
 
         for (int i = 0; i < rendererCache.Count; i++)
         {
-            var (r, _) = rendererCache[i];
+            var (r, _, instance) = rendererCache[i];
 
-            if (r != null)
+            if (r == null) continue;
+
+            if (instance != null)
             {
-                r.material = mat;
-                rendererCache[i] = (r, mat);
+                // Переиспользуем существующий инстанс: копируем свойства,
+                // новых material-объектов не появляется.
+                ApplyMaterialProps(instance, mat);
             }
+            else
+            {
+                // Инстанса нет (рендерер был без материала) — назначаем
+                // sharedMaterial: ссылка на тот же объект, без клонирования.
+                // ВАЖНО: instance оставляем null — mat является общим
+                // ассетом-оригиналом, его уничтожать нельзя (иначе
+                // сломает все юниты, использующие этот материал).
+                r.sharedMaterial = mat;
+                rendererCache[i] = (r, mat, null);
+                continue;
+            }
+
+            // «Оригинал» обновляем на переданный материал: вспышка должна
+            // возвращать актуальный цвет (например, после подсветки выделения).
+            rendererCache[i] = (r, mat, rendererCache[i].instance);
         }
+    }
+
+    /// <summary>
+    /// Скопировать ВСЕ свойства из src в dst (переиспользуемый инстанс
+    /// материала). CopyPropertiesFromMaterial надёжно переносит цвета,
+    /// текстуры и float-свойства независимо от шейдера — работает и в
+    /// Built-in (_Color), и при переходе на URP (_BaseColor).
+    /// </summary>
+    private static void ApplyMaterialProps(Material dst, Material src)
+    {
+        dst.CopyPropertiesFromMaterial(src);
     }
 
     /// <summary>
@@ -639,8 +691,10 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Визуальная вспышка «получил урон»: подмена материалов ВСЕХ рендереров
-    /// кэша на matHit на 0.1 сек, затем возврат каждому его оригинала.
+    /// Визуальная вспышка «получил урон»: подмена цвета ВСЕХ рендереров кэша
+    /// на цвет matHit на 0.1 сек, затем возврат каждого «оригинала».
+    /// (Fix-4, баг А) Пишем свойства в переиспользуемые инстансы материалов —
+    /// renderer.material больше не присваивается, новых копий не возникает.
     /// </summary>
     private IEnumerator Flash()
     {
@@ -649,9 +703,9 @@ public class Unit : MonoBehaviour
 
         foreach (var pair in rendererCache)
         {
-            if (pair.renderer != null)
+            if (pair.renderer != null && pair.instance != null)
             {
-                pair.renderer.material = matHit;
+                ApplyMaterialProps(pair.instance, matHit);
             }
         }
 
@@ -666,15 +720,16 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Пройти по кэшу и вернуть каждому рендереру его оригинальный материал.
+    /// Пройти по кэшу и вернуть каждому рендереру его оригинальный материал
+    /// (копией свойств в переиспользуемый инстанс — без клонирования).
     /// </summary>
     private void RestoreAllOriginals()
     {
         foreach (var pair in rendererCache)
         {
-            if (pair.renderer != null && pair.original != null)
+            if (pair.renderer != null && pair.original != null && pair.instance != null)
             {
-                pair.renderer.material = pair.original;
+                ApplyMaterialProps(pair.instance, pair.original);
             }
         }
     }
@@ -739,8 +794,6 @@ public class Unit : MonoBehaviour
             StopCoroutine(moveCoroutine);
         }
 
-        lastGridPos = fromCell;
-
         moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
     }
 
@@ -749,7 +802,7 @@ public class Unit : MonoBehaviour
     /// путь построен в Squad.CommandFormation (проход 0) ДО освобождения
     /// клеток, поэтому повторный A* здесь не нужен и юнит гарантированно
     /// не остаётся «призраком» (клетка освобождена только для валидного пути).
-    /// Стартовая клетка передаётся ЯВНО (для lastGridPos/страховки).
+    /// Стартовая клетка передаётся ЯВНО (для логов/страховки).
     /// </summary>
     public void StartMoveAlongPath(List<Vector2Int> path, Vector2Int fromCell, Vector2Int targetCell)
     {
@@ -771,8 +824,6 @@ public class Unit : MonoBehaviour
         {
             StopCoroutine(moveCoroutine);
         }
-
-        lastGridPos = fromCell;
 
         moveCoroutine = StartCoroutine(MoveAlongPath(path, targetCell));
     }
@@ -813,5 +864,17 @@ public class Unit : MonoBehaviour
         {
             GridManager.Instance.Free(GridPos, this);
         }
+
+        // Fix-4, баг А: уничтожаем созданные material-инстансы.
+        // Unity позволяет и рекомендует удалять инстансы материалов,
+        // созданные через renderer.material, именно внутри OnDestroy().
+        foreach (var pair in rendererCache)
+        {
+            if (pair.instance != null)
+            {
+                Destroy(pair.instance);
+            }
+        }
+        rendererCache.Clear();
     }
 }
