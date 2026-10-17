@@ -197,7 +197,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b957e06cf89c5d049ac2cc23f58fae3f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GridManager
-  size: 24
+  size: 36
   cellSize: 1
 --- !u!4 &471832501
 Transform:
@@ -357,9 +357,12 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::SquadSpawner
   unitPrefab: {fileID: 2853641944360342225, guid: 8c412e563abbdfb40855f00bdecdb185, type: 3}
   matUnit: {fileID: 2100000, guid: 18b13219ddad2fa47a55902ae7ce5774, type: 2}
-  spawnOrigin: {x: 15, y: 15}
+  spawnOrigin: {x: 18, y: 18}
   matEnemy: {fileID: 2100000, guid: fbb9f58e65bcd0a4e8f18f5c17f6726a, type: 2}
   matHit: {fileID: 2100000, guid: a914552835aa4a64e81cb15ce2c7a753, type: 2}
+  edgeRingWidth: 3
+  spawnBlockSize: 4
+  spawnAnchorAttempts: 10
 --- !u!1 &954305206
 GameObject:
   m_ObjectHideFlags: 0
@@ -486,7 +489,7 @@ Transform:
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
   m_LocalRotation: {x: 0.5, y: 0, z: 0, w: 0.8660254}
-  m_LocalPosition: {x: 12, y: 26, z: -4}
+  m_LocalPosition: {x: 18, y: 30, z: 0.5}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
