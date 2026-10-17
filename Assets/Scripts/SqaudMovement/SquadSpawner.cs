@@ -8,6 +8,27 @@ using UnityEngine;
 /// </summary>
 public class SquadSpawner : MonoBehaviour
 {
+    /// <summary>Синглтон — доступ через SquadSpawner.Instance (нужен WaveManager).</summary>
+    public static SquadSpawner Instance { get; private set; }
+
+    private void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        Instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+    }
+
     [Header("Spawn Settings")]
     public GameObject unitPrefab;
     public Material matUnit;
@@ -30,11 +51,9 @@ public class SquadSpawner : MonoBehaviour
 
     private void Update()
     {
-        // Дебаг: клавиша E спавнит отряд врагов.
-        if (Input.GetKeyDown(KeyCode.E))
-        {
-            SpawnEnemySquad();
-        }
+        // Дебаг-клавиша E переехала в InputController: теперь она запускает
+        // первую волну через WaveManager.StartNextWave(). SpawnEnemySquad()
+        // оставлен приватной обёрткой для обратной совместимости.
     }
 
     private void SpawnSquad()
@@ -107,27 +126,37 @@ public class SquadSpawner : MonoBehaviour
     }
 
     /// <summary>
-    /// Дебаг-спавн отряда врагов: линия из 4 юнитов на y=4 лицом к игроку (+Z).
-    /// Зона атаки врага с клетки (x,4) при Facing=(0,1): (x-1,5), (x,5), (x+1,5).
-    /// Контакт с игроком возможен, когда игрок стоит на y=5.
+    /// Спавн волны врагов: count юнитов, спавн в несколько рядов (по 4 в ряду),
+    /// чтобы все помещались на сетке. Статы НЕ масштабируются — берутся из
+    /// префаба как есть (maxHp = 5).
     /// </summary>
-    private void SpawnEnemySquad()
+    public void SpawnWave(int count)
     {
         var gm = GridManager.Instance;
         if (gm == null) return;
 
+        if (unitPrefab == null)
+        {
+            Debug.LogError("[SquadSpawner] unitPrefab не назначен — волна отменена.");
+            return;
+        }
+
         // Squad — MonoBehaviour, поэтому создаём его через GameObject + AddComponent
         // (как у игроков в SpawnSquad): у «голого» new Squad() нет GameObject,
         // не работают Unity-жизненные циклы и его не найти через FindObjectOfType.
-        var enemySquadGO = new GameObject("EnemySquad");
+        var enemySquadGO = new GameObject("EnemySquad_Wave");
         var enemySquad = enemySquadGO.AddComponent<Squad>();
 
         int baseX = 10;
         int baseY = 4;
+        const int RowWidth = 4; // максимум врагов в одном ряду; дальше — новый ряд по Y
 
-        for (int i = 0; i < 4; i++)
+        int spawned = 0;
+
+        for (int i = 0; i < count; i++)
         {
-            Vector2Int cell = new Vector2Int(baseX + i, baseY);
+            Vector2Int cell = new Vector2Int(baseX + (i % RowWidth), baseY + (i / RowWidth));
+
             if (!gm.IsFree(cell))
             {
                 Debug.LogWarning($"[SquadSpawner] Клетка {cell} занята/заблокирована — пропуск");
@@ -140,6 +169,7 @@ public class SquadSpawner : MonoBehaviour
             Unit unit = go.GetComponent<Unit>();
             if (unit == null) unit = go.AddComponent<Unit>();
 
+            // НИКАКИХ МНОЖИТЕЛЕЙ! Статы берутся из префаба (maxHp = 5).
             unit.team = Team.Enemy;
             unit.Facing = new Vector2Int(0, 1);
             unit.matHit = matHit;
@@ -147,8 +177,18 @@ public class SquadSpawner : MonoBehaviour
             unit.SetDefaultVisual(matEnemy);   // потом краска — кэш уже есть
 
             enemySquad.Add(unit);
+            spawned++;
         }
 
-        Debug.Log($"[SquadSpawner] Заспавнен отряд врагов на y={baseY}");
+        Debug.Log($"[SquadSpawner] Волна: заспавнено {spawned}/{count} врагов");
+    }
+
+    /// <summary>
+    /// Обратная совместимость: дебаг-спавн отряда врагов (клавиша E) —
+    /// теперь обёртка над SpawnWave.
+    /// </summary>
+    private void SpawnEnemySquad()
+    {
+        SpawnWave(4);
     }
 }

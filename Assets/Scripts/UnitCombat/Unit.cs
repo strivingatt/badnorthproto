@@ -37,11 +37,21 @@ public class Unit : MonoBehaviour
     public Team team = Team.Player;
 
     /// <summary>Максимальное здоровье.</summary>
-    public int maxHp = 3;
+    public int maxHp = 5;
 
     /// <summary>Текущее здоровье (только чтение извне).</summary>
     private int hp;
     public int Hp => hp;
+
+    /// <summary>
+    /// Лечение: восстанавливает amount HP, но не выше maxHp.
+    /// Мёртвый юнит не лечится (Fix-4 защита от двойной смерти сохранена).
+    /// </summary>
+    public void Heal(int amount)
+    {
+        if (isDead) return;
+        hp = Mathf.Min(maxHp, hp + amount);
+    }
 
     /// <summary>Урон одной атаки.</summary>
     public int attackDamage = 1;
