@@ -53,13 +53,37 @@ public class Unit : MonoBehaviour
         hp = Mathf.Min(maxHp, hp + amount);
     }
 
-    /// <summary>Урон одной атаки.</summary>
+    /// <summary>Урон одной атаки (дефолт переопределяется классами-наследниками).</summary>
     public int attackDamage = 1;
 
-    /// <summary>Длительность перезарядки атаки, секунд.</summary>
+    /// <summary>Длительность перезарядки атаки, секунд (дефолт — у Militia).</summary>
     public float attackCooldown = 0.8f;
 
-    /// <summary>Оставшееся время до следующей атаки, секунд (тикает CombatResolver).</summary>
+    /// <summary>
+    /// Дистанция, на которой ИИ должен остановиться, чтобы атаковать
+    /// (клетки, Чебышёв). Базовый Unit не знает форм атаки — значение по
+    /// умолчанию 1 (ближний бой); классы переопределяют (Копейщик — 2,
+    /// Пращник — 3). Используется EnemyAI вместо жёсткого attackRange.
+    /// </summary>
+    public virtual int PreferredAttackRange => 1;
+
+    /// <summary>
+    /// Анимация атаки: базовый Unit не знает форм удара — производные классы
+    /// вызывают этот хук из своей TryAttack() после успешного выбора целей.
+    /// </summary>
+    protected void PlayAttackAnimation()
+    {
+        // Триггер (не Play/bool) — повторные атаки корректно перезапускают клип.
+        // animator может быть null у старых префабов-кубов.
+        if (animator != null)
+        {
+            animator.SetTrigger("Attack");
+        }
+    }
+
+    /// <summary>Оставшееся время до следующей атаки, секунд. Тикает снаружи
+    /// CombatResolver (поле остаётся public — контракт резолвера не меняется);
+    /// классы-наследники проверяют его перед ударом и запускают после.</summary>
     public float cooldownTimer = 0f;
 
     /// <summary>
@@ -68,7 +92,7 @@ public class Unit : MonoBehaviour
     /// (двойной лог смерти, повторный Squad.Remove). Все боевые входы
     /// (TakeDamage / TryAttack / Die) проверяют этот флаг.
     /// </summary>
-    private bool isDead = false;
+    protected bool isDead = false;
 
     /// <summary>Жив ли юнит (только чтение извне — для ИИ и боевых систем).</summary>
     public bool IsDead => isDead;
@@ -78,7 +102,7 @@ public class Unit : MonoBehaviour
     /// (float), поэтому после «восьми тиков по 0.1» в нём может остаться ~1e-8.
     /// Без допуска юнит изредка пропускал бы лишний тик.
     /// </summary>
-    private const float CooldownEpsilon = 0.0001f;
+    protected const float CooldownEpsilon = 0.0001f;
 
     /// <summary>Материал вспышки при получении урона (назначается спавнером).</summary>
     public Material matHit;
@@ -88,6 +112,7 @@ public class Unit : MonoBehaviour
 
     /// <summary>Активная корутина движения (чтобы останавливать при повторном приказе).</summary>
     private Coroutine moveCoroutine;
+
 
     /// <summary>Дочерний объект-указатель направления («нос»).</summary>
     private Transform noseTransform;
@@ -557,117 +582,20 @@ public class Unit : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Таблица целочисленных поворотов направлений сетки на ±45° (Fix-1, баг А).
-    /// Ключ — направление (8 допустимых векторов), значение — {ccw45, cw45}.
-    /// Порядок пар согласован с Sectors (обход против часовой): ccw = следующий
-    /// по массиву, cw = предыдущий.
-    /// </summary>
-    private static readonly Dictionary<Vector2Int, (Vector2Int ccw45, Vector2Int cw45)> Rot45 =
-        new Dictionary<Vector2Int, (Vector2Int, Vector2Int)>
-    {
-        { new Vector2Int( 0,  1), (new Vector2Int(-1,  1), new Vector2Int( 1,  1)) }, // N  -> NW / NE
-        { new Vector2Int( 1,  1), (new Vector2Int( 0,  1), new Vector2Int( 1,  0)) }, // NE -> N  / E
-        { new Vector2Int( 1,  0), (new Vector2Int( 1,  1), new Vector2Int( 1, -1)) }, // E  -> NE / SE
-        { new Vector2Int( 1, -1), (new Vector2Int( 1,  0), new Vector2Int( 0, -1)) }, // SE -> E  / S
-        { new Vector2Int( 0, -1), (new Vector2Int( 1, -1), new Vector2Int(-1, -1)) }, // S  -> SE / SW
-        { new Vector2Int(-1, -1), (new Vector2Int( 0, -1), new Vector2Int(-1,  0)) }, // SW -> S  / W
-        { new Vector2Int(-1,  0), (new Vector2Int(-1, -1), new Vector2Int(-1,  1)) }, // W  -> SW / NW
-        { new Vector2Int(-1,  1), (new Vector2Int(-1,  0), new Vector2Int( 0,  1)) }, // NW -> W  / N
-    };
+    // --- ЛОГИКА АТАКИ ВЫНЕСЕНА В КЛАССЫ ---
+    // Таблица Rot45, GetAttackCells() и реализация удара переехали в Militia.cs
+    // (система классов войск). Базовый Unit не знает конкретных форм атаки;
+    // дистанция боя задаётся через PreferredAttackRange, анимация — PlayAttackAnimation().
 
     /// <summary>
-    /// Клетки зоны атаки (Fix-1, баг А): множество {F, rot45cw(F), rot45ccw(F)},
-    /// где F = Facing — три СМЕЖНЫЕ клетки (фронт шириной 3 по 8-соседству).
-    /// Реализовано целочисленной таблицей поворотов на 45°, а НЕ перпендикуляром
-    /// right = (Facing.y, -Facing.x): для диагоналей перпендикуляр давал неверную
-    /// зону (0,2),(1,1),(2,0) — удар через клетку без ортогональных соседей.
-    /// Пример для Facing=(1,1): {(1,0), (1,1), (0,1)} + GridPos.
-    /// Осевые направления дают ту же зону, что и прежняя логика.
+    /// Попытка атаки, вызывается CombatResolver каждый боевой тик (0.1 с).
+    /// Базовый Unit НЕ реализует удар — возвращает false. Реальную атаку
+    /// выполняют классы-наследники (Militia — ближний бой по зоне 3 клетки,
+    /// Spearman — через клетку, Slinger — выстрел с линией видимости).
     /// </summary>
-    private List<Vector2Int> GetAttackCells()
+    public virtual bool TryAttack()
     {
-        List<Vector2Int> cells = new List<Vector2Int>(3);
-
-        if (Rot45.TryGetValue(Facing, out var pair))
-        {
-            cells.Add(GridPos + Facing);      // центр фронта
-            cells.Add(GridPos + pair.cw45);   // фланг по часовой
-            cells.Add(GridPos + pair.ccw45);  // фланг против часовой
-        }
-        else
-        {
-            // Facing вне таблицы 8 направлений (защита): бьём хотя бы прямо.
-            cells.Add(GridPos + Facing);
-        }
-
-        return cells;
-    }
-
-    /// <summary>
-    /// Попытка атаки: цели — активные враги команды в зоне атаки.
-    /// Кулдаун запускается только при наличии целей; при успешной атаке
-    /// дёргается триггер анимации "Attack".
-    ///
-    /// Проверка кулдауна обязательна ЗДЕСЬ: CombatResolver вызывает TryAttack
-    /// каждый боевой тик (0.1 с), поэтому без неё удар проходил 10 раз в секунду,
-    /// а attackCooldown вообще ни на что не влиял.
-    /// </summary>
-    public bool TryAttack()
-    {
-        // Мёртвый юнит не атакует (Destroy отложен — объект жив до конца кадра).
-        if (isDead) return false;
-
-        var gm = GridManager.Instance;
-        if (gm == null) return false;
-
-        if (cooldownTimer > CooldownEpsilon) return false;
-
-        List<Unit> targets = new List<Unit>();
-
-        foreach (Vector2Int cell in GetAttackCells())
-        {
-            if (!gm.InBounds(cell)) continue;
-
-            IReadOnlyList<Unit> occupants = gm.GetOccupants(cell);
-
-            if (occupants == null) continue;
-
-            // В клетке может стоять несколько юнитов («проход сквозь друг друга»),
-            // поэтому перебираем всех: иначе второй юнит в клетке неуязвим.
-            for (int i = 0; i < occupants.Count; i++)
-            {
-                Unit occupant = occupants[i];
-
-                // Проверяем, что враг активен (not destroyed и не умер) — иначе
-                // мёртвый юнит мог формально оставаться в клетке до конца кадра.
-                if (occupant != null && occupant.team != this.team &&
-                    occupant.gameObject != null && !occupant.isDead)
-                {
-                    targets.Add(occupant);
-                }
-            }
-        }
-
-        if (targets.Count == 0) return false;
-
-        cooldownTimer = attackCooldown;
-
-        // Триггер (не Play/bool) — повторные атаки корректно перезапускают клип.
-        // animator может быть null у старых префабов-кубов.
-        if (animator != null)
-        {
-            animator.SetTrigger("Attack");
-        }
-
-        Debug.Log($"[Combat] {name} бьёт {targets.Count} целей на {attackDamage} урона");
-
-        foreach (var target in targets)
-        {
-            target.TakeDamage(attackDamage, this);
-        }
-
-        return true;
+        return false;
     }
 
     /// <summary>

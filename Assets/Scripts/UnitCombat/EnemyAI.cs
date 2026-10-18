@@ -10,7 +10,7 @@ using UnityEngine;
 ///    метрика Чебышёва max(|dx|,|dy|) от GridPos — Fix-1, баг Б; раньше был
 ///    Manhattan, из-за чего диагональный сосед считался «далёким» и враг
 ///    строил путь В клетку цели) — через GridManager.GetAllUnits().
-/// 2. Если цель найдена и НЕ смежна с нами (Чебышёв > attackRange) — строим
+/// 2. Если цель найдена и НЕ в зоне поражения (Чебышёв > unit.PreferredAttackRange) — строим
 ///    путь Pathfinding.AStar к ближайшей СВОБОДНОЙ клетке, смежной с целью
 ///    (Чебышёв = 1 от target.GridPos), и идём по нему плавно КОРУТИНОЙ
 ///    MoveAlongPath (по образцу Unit.MoveAlongPath): Vector3.MoveTowards
@@ -25,8 +25,9 @@ using UnityEngine;
 ///    Реестр НЕ является частью occupancy и НЕ влияет на бой (зоны атаки,
 ///    GetAllUnits, кулдаун его не видят). Клейм освобождается при достижении
 ///    цели, при новом пересчёте пути и в OnDestroy (покрывает смерть юнита).
-/// 3. Если цель в зоне поражения (Чебышёв <= attackRange, т.е. смежность по
-///    8 направлениям) — останавливаемся (MoveTowards НЕ вызываем) и смотрим
+/// 3. Если цель в зоне поражения (Чебышёв <= unit.PreferredAttackRange:
+///    1 для ближнего боя = смежность по 8 направлениям, 2 у Копейщика,
+///    3 у Пращника) — останавливаемся (MoveTowards НЕ вызываем) и смотрим
 ///    на цель (Facing + ApplyFacing); атаку выполняет CombatResolver,
 ///    вызывая TryAttack() с общего тика — сам ИИ НЕ дерёт.
 /// 4. Если цель умерла (unity-null) или ушла за пределы detectionRange — сброс
@@ -56,13 +57,12 @@ public class EnemyAI : MonoBehaviour
 
     [Header("Engagement")]
     /// <summary>
-    /// Дистанция вступления в бой (Чебышёв, целое число клеток). Значение по
-    /// факту сравнивается как int, дробная часть игнорируется. Default 1 =
-    /// атаковать только с соседней клетки (смежность по 8 направлениям).
-    /// (Раньше стояло 1.5f, что для целочисленного Manhattan эквивалентно 1 —
-    /// семантическая ложь; приведено к честному значению.)
+    /// Дистанция вступления в бой берётся из класса юнита:
+    /// unit.PreferredAttackRange (Militia/Warrior = 1, Spearman = 2,
+    /// Slinger = 3). Поле оставлено только как fallback на случай, если у
+    /// юнита нет боевого класса (базовый Unit): тогда используем его.
     /// </summary>
-    public float attackRange = 1f;
+    public float fallbackAttackRange = 1f;
 
     [Header("Performance")]
     /// <summary>Интервал пересчёта пути и цели, секунд.</summary>
@@ -180,7 +180,7 @@ public class EnemyAI : MonoBehaviour
 
         int dist = DistanceInCells(unit.GridPos, target.GridPos);
 
-        if (dist <= attackRange)
+        if (dist <= EngagementRange())
         {
             // Цель смежна с нами (Чебышёв <= 1 — зона атаки, п.3 ТЗ Fix-1):
             // останавливаемся (MoveTowards НЕ вызываем), разворачиваемся лицом
@@ -280,7 +280,7 @@ public class EnemyAI : MonoBehaviour
         // (snap не выполнен). Клейм переставляется в SetClaim при старте.
         ReleaseClaim();
 
-        Vector2Int? goal = FindAdjacentFreeCell(target.GridPos);
+        Vector2Int? goal = FindAttackPositionCell(target.GridPos);
 
         if (goal == null)
         {
@@ -322,26 +322,43 @@ public class EnemyAI : MonoBehaviour
     }
 
     /// <summary>
-    /// Выбрать цель пути: из 8 клеток, смежных с целью (Чебышёв = 1 от
-    /// targetCell), берём ближайшую к нам по Чебышёву среди подходящих:
-    /// в границах, не заблокирована (stone), GetOccupant == null,
-    /// НЕ заклеймлена другим врагом как цель его текущего движения.
-    /// Подходящих нет — возвращаем null (враг стоит на месте; в клетку цели
-    /// и в занятую клетку входить запрещено). Клетка самого юнита в
-    /// рассмотрение не входит (мы там уже стоим).
+    /// Дистанция вступления в бой для ХОЗЯИНА ИИ: берётся из боевого класса
+    /// юнита (unit.PreferredAttackRange: Militia/Warrior = 1, Spearman = 2,
+    /// Slinger = 3). Для базового Unit без класса — fallbackAttackRange.
     /// </summary>
-    private Vector2Int? FindAdjacentFreeCell(Vector2Int targetCell)
+    private int EngagementRange()
+    {
+        return unit != null ? unit.PreferredAttackRange : Mathf.RoundToInt(fallbackAttackRange);
+    }
+
+    /// <summary>
+    /// Выбрать цель пути: свободную клетку на КОЛЬЦЕ дистанции
+    /// PreferredAttackRange от цели (Чебышёв = R; для ближнего боя R = 1 —
+    /// это те же 8 смежных клеток, что и раньше). Дальние классы (Копейщик
+    /// R=2, Пращник R=3) встают на соответствующем удалении — вплотную не
+    /// лезут. Из подходящих берём ближайшую к нам по Чебышёву: в границах,
+    /// не заблокирована (stone), GetOccupant == null, НЕ заклеймлена другим
+    /// врагом. Подходящих нет — возвращаем null (враг стоит на месте; в
+    /// клетку цели и в занятую клетку входить запрещено). Клетка самого
+    /// юнита в рассмотрение не входит (если он уже на нужном кольце — Update
+    /// остановит его до вызова репаттинга).
+    /// </summary>
+    private Vector2Int? FindAttackPositionCell(Vector2Int targetCell)
     {
         var gm = GridManager.Instance;
+
+        int r = EngagementRange();
 
         Vector2Int? best = null;
         int bestDist = int.MaxValue;
 
-        for (int dx = -1; dx <= 1; dx++)
+        // Обход квадратной рамки Чебышёва-радиуса r вокруг цели: клетки,
+        // у которых max(|dx|,|dy|) == r ровно (сторона 2r+1 минус внутренность).
+        for (int dx = -r; dx <= r; dx++)
         {
-            for (int dy = -1; dy <= 1; dy++)
+            for (int dy = -r; dy <= r; dy++)
             {
-                if (dx == 0 && dy == 0) continue; // сама клетка цели — не цель пути
+                if (Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy)) != r) continue;
 
                 Vector2Int cell = targetCell + new Vector2Int(dx, dy);
 

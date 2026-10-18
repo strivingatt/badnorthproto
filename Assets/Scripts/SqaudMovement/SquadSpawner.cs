@@ -35,6 +35,17 @@ public class SquadSpawner : MonoBehaviour
     public Material matUnit;
     public Vector2Int spawnOrigin = new Vector2Int(10, 10);
 
+    [Tooltip("Боевой класс юнитов игрока (null = Unit — юнит не атакует). " +
+             "Militia — базовый ближний бой. Поле сериализуется как UnityEngine.Object: " +
+             "в инспекторе можно выбрать скрипт Militia/Warrior/Spearman/Slinger — " +
+             "компонент нужного типа добавится к префабу при спавне.")]
+    public MonoBehaviour playerUnitClass;
+
+    [Tooltip("Боевой класс вражеских юнитов волн (null = Unit — не атакуют). " +
+             "Можно назначить Slinger — тогда враги стреляют с дистанции 3 и " +
+             "останавливаются на PreferredAttackRange (логика EnemyAI общая).")]
+    public MonoBehaviour enemyUnitClass;
+
     [Header("Combat Visuals")]
     [Tooltip("Материал вражеских юнитов (дебаг-спавн по E).")]
     public Material matEnemy;
@@ -97,11 +108,7 @@ public class SquadSpawner : MonoBehaviour
                 // Позиционируем в центр клетки ещё до Init, чтобы юнит был «на месте».
                 go.transform.position = GridManager.Instance.GridToWorld(cell);
 
-                var unit = go.GetComponent<Unit>();
-                if (unit == null)
-                {
-                    unit = go.AddComponent<Unit>();
-                }
+                var unit = EnsureUnitClass(go, playerUnitClass);
 
                 unit.Init(cell, squad);
 
@@ -193,10 +200,9 @@ public class SquadSpawner : MonoBehaviour
                 GameObject go = Instantiate(unitPrefab);
                 go.transform.position = gm.GridToWorld(cell);
 
-                Unit unit = go.GetComponent<Unit>();
-                if (unit == null) unit = go.AddComponent<Unit>();
+                Unit unit = EnsureUnitClass(go, enemyUnitClass);
 
-                // НИКАКИХ МНОЖИТЕЛЕЙ! Статы берутся из префаба (maxHp = 5).
+                // НИКАКИХ МНОЖИТЕЛЕЙ! Статы берутся из класса-префаба.
                 unit.team = Team.Enemy;
                 unit.Facing = new Vector2Int(0, 1);
                 unit.matHit = matHit;
@@ -261,6 +267,33 @@ public class SquadSpawner : MonoBehaviour
         }
 
         return candidates[Random.Range(0, candidates.Count)];
+    }
+
+    /// <summary>
+    /// Достать/добавить компонент боевого класса на инстанс префаба.
+    /// Если назначен playerUnitClass/enemyUnitClass (Militia/Warrior/...),
+    /// берём компонент этого типа; иначе — базовый Unit (он НЕ атакует:
+    /// TryAttack виртуальный, базовая реализация возвращает false).
+    /// GetComponent&lt;Unit&gt; находит и наследников (UpCast), поэтому проверка
+    /// «уже есть» защищает от дублей при повторном спавне одного GO.
+    /// </summary>
+    private static Unit EnsureUnitClass(GameObject go, MonoBehaviour unitClass)
+    {
+        System.Type type = (unitClass != null) ? unitClass.GetType() : typeof(Unit);
+
+        Unit existing = go.GetComponent<Unit>();
+        if (existing != null && existing.GetType() == type)
+        {
+            return existing;
+        }
+
+        Component c = go.GetComponent(type);
+        if (c is Unit u)
+        {
+            return u;
+        }
+
+        return go.AddComponent(type) as Unit;
     }
 
     /// <summary>
