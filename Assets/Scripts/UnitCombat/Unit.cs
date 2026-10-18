@@ -113,10 +113,6 @@ public class Unit : MonoBehaviour
     /// <summary>Активная корутина движения (чтобы останавливать при повторном приказе).</summary>
     private Coroutine moveCoroutine;
 
-
-    /// <summary>Дочерний объект-указатель направления («нос»).</summary>
-    private Transform noseTransform;
-
     /// <summary>«Родной» материал юнита (белый у игроков, красный у врагов):
     /// запоминается при спавне, восстанавливается после снятия выделения.</summary>
     private Material defaultMaterial;
@@ -191,11 +187,6 @@ public class Unit : MonoBehaviour
 
         // Позиционируем трансформ в центр клетки.
         transform.position = GridManager.Instance.GridToWorld(cell);
-
-        // Создаём «нос» child-объектом КОДОМ (не через префаб) — визуальный
-        // указатель направления. ВАЖНО: до BuildRendererCache, чтобы нос
-        // успел появиться и был отфильтрован по имени.
-        CreateNose();
 
         // Применяем текущее направление: локальный +Z юнита смотрит вдоль Facing.
         ApplyFacing();
@@ -463,28 +454,6 @@ public class Unit : MonoBehaviour
         {
             gm.ForceOccupy(GridPos, this);
         }
-    }
-
-    /// <summary>
-    /// Создать child-объект "Nose" кодом (не префабом): маленький куб
-    /// localScale (0.2, 0.2, 0.4), localPosition (0, 0, 0.45) — выступает
-    /// вперёд по локальному +Z юнита. Родитель — трансформ юнита.
-    /// Вызывается один раз из Init.
-    /// </summary>
-    private void CreateNose()
-    {
-        if (noseTransform != null)
-        {
-            return; // уже создан
-        }
-
-        var nose = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        nose.name = "Nose";
-        nose.transform.SetParent(transform, false);
-        nose.transform.localScale = new Vector3(0.2f, 0.2f, 0.4f);
-        nose.transform.localPosition = new Vector3(0f, 0f, 0.45f);
-
-        noseTransform = nose.transform;
     }
 
     /// <summary>

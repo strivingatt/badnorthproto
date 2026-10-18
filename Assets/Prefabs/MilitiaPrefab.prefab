@@ -60,40 +60,16 @@ PrefabInstance:
     m_AddedComponents:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: db51f73f0691ce441a818334cb87bf66, type: 3}
       insertIndex: -1
-      addedObject: {fileID: 5442529415143689654}
+      addedObject: {fileID: 5820270693581936595}
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: db51f73f0691ce441a818334cb87bf66, type: 3}
       insertIndex: -1
-      addedObject: {fileID: 5820270693581936595}
+      addedObject: {fileID: -7407954485707166609}
   m_SourcePrefab: {fileID: 100100000, guid: db51f73f0691ce441a818334cb87bf66, type: 3}
 --- !u!1 &2853641944360342225 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 919132149155446097, guid: db51f73f0691ce441a818334cb87bf66, type: 3}
   m_PrefabInstance: {fileID: 3124167643436543872}
   m_PrefabAsset: {fileID: 0}
---- !u!114 &5442529415143689654
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2853641944360342225}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 377140494066d5449bd85a4b05e58173, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Unit
-  GridPos: {x: 0, y: 0}
-  Facing: {x: 0, y: 1}
-  Squad: {fileID: 0}
-  IsMoving: 0
-  moveSpeed: 4
-  team: 0
-  maxHp: 5
-  attackDamage: 1
-  attackCooldown: 0.8
-  cooldownTimer: 0
-  matHit: {fileID: 0}
-  detectionRange: 6
 --- !u!95 &5820270693581936595
 Animator:
   serializedVersion: 7
@@ -116,3 +92,27 @@ Animator:
   m_AllowConstantClipSamplingOptimization: 1
   m_KeepAnimatorStateOnDisable: 0
   m_WriteDefaultValuesOnDisable: 0
+--- !u!114 &-7407954485707166609
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2853641944360342225}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dac0749b2d7c86149bdc8d8164452b67, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Militia
+  GridPos: {x: 0, y: 0}
+  Facing: {x: 0, y: 1}
+  Squad: {fileID: 0}
+  IsMoving: 0
+  moveSpeed: 4
+  team: 0
+  maxHp: 5
+  attackDamage: 1
+  attackCooldown: 0.8
+  cooldownTimer: 0
+  matHit: {fileID: 2100000, guid: a914552835aa4a64e81cb15ce2c7a753, type: 2}
+  detectionRange: 10
