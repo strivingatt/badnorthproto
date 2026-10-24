@@ -44,27 +44,30 @@ public class Militia : Unit
 
     /// <summary>
     /// Клетки зоны атаки (Fix-1, баг А): множество {F, rot45cw(F), rot45ccw(F)},
-    /// где F = Facing — три СМЕЖНЫЕ клетки (фронт шириной 3 по 8-соседству).
+    /// где F = facing — три СМЕЖНЫЕ клетки (фронт шириной 3 по 8-соседству).
     /// Реализовано целочисленной таблицей поворотов на 45°, а НЕ перпендикуляром
     /// right = (Facing.y, -Facing.x): для диагоналей перпендикуляр давал неверную
     /// зону (0,2),(1,1),(2,0) — удар через клетку без ортогональных соседей.
-    /// Пример для Facing=(1,1): {(1,0), (1,1), (0,1)} + GridPos.
-    /// virtual — наследники меняют форму зоны (Spearman бьёт через клетку).
+    /// Пример для facing=(1,1): {(1,0), (1,1), (0,1)} + origin.
+    ///
+    /// Геометрия параметризована (origin/facing), а не читает GridPos/Facing:
+    /// ИИ проверяет зону для КАНДИДАТНЫХ клеток боя (Unit.CanAttackCellFrom).
+    /// Наследники меняют форму зоны (Spearman: копьё на дистанции 2 + ближний бой).
     /// </summary>
-    public virtual List<Vector2Int> GetAttackCells()
+    public override List<Vector2Int> GetAttackCells(Vector2Int origin, Vector2Int facing)
     {
         List<Vector2Int> cells = new List<Vector2Int>(3);
 
-        if (Rot45.TryGetValue(Facing, out var pair))
+        if (Rot45.TryGetValue(facing, out var pair))
         {
-            cells.Add(GridPos + Facing);      // центр фронта
-            cells.Add(GridPos + pair.cw45);   // фланг по часовой
-            cells.Add(GridPos + pair.ccw45);  // фланг против часовой
+            cells.Add(origin + facing);      // центр фронта
+            cells.Add(origin + pair.cw45);   // фланг по часовой
+            cells.Add(origin + pair.ccw45);  // фланг против часовой
         }
         else
         {
-            // Facing вне таблицы 8 направлений (защита): бьём хотя бы прямо.
-            cells.Add(GridPos + Facing);
+            // facing вне таблицы 8 направлений (защита): бьём хотя бы прямо.
+            cells.Add(origin + facing);
         }
 
         return cells;

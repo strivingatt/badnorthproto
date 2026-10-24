@@ -28,6 +28,24 @@ public class Slinger : Militia
     public override int PreferredAttackRange => shotRange;
 
     /// <summary>
+    /// Пращник бьёт НЕ по клеткам зоны, а по радиусу: достаёт любую цель в
+    /// пределах shotRange (Чебышёв). Поэтому геометрическая проверка базового
+    /// Unit здесь заменена радиусной — иначе ИИ (по зоне атаки) считал бы, что
+    /// цель не достаётся ни с одной клетки, и пращник никогда не вступал бы в бой.
+    /// </summary>
+    public override bool CanAttackCellFrom(Vector2Int from, Vector2Int targetCell)
+    {
+        if (from == targetCell) return false;
+
+        int dist = Mathf.Max(
+            Mathf.Abs(targetCell.x - from.x),
+            Mathf.Abs(targetCell.y - from.y)
+        );
+
+        return dist <= shotRange;
+    }
+
+    /// <summary>
     /// Попытка атаки дальним боем: цель — ближайший живой враг в радиусе
     /// shotRange с чистой линией видимости. Кулдаун-проверка и запуск
     /// анимации — как у ближнего боя (общий контракт CombatResolver:

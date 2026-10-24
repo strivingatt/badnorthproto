@@ -68,6 +68,65 @@ public class Unit : MonoBehaviour
     public virtual int PreferredAttackRange => 1;
 
     /// <summary>
+    /// Клетки зоны атаки для ПРОИЗВОЛЬНОЙ позиции origin и разворота facing —
+    /// чистая геометрия, без обращения к текущему состоянию юнита. Нужна ИИ,
+    /// чтобы заранее проверить/выбрать клетку боя. Базовый Unit форм атаки не
+    /// знает: список пуст (не бьёт вовсе); переопределяют боевые классы.
+    /// </summary>
+    public virtual List<Vector2Int> GetAttackCells(Vector2Int origin, Vector2Int facing)
+    {
+        return new List<Vector2Int>(0);
+    }
+
+    /// <summary>
+    /// Клетки зоны атаки при текущих GridPos/Facing — обёртка над
+    /// GetAttackCells(origin, facing), используется ударом Militia.
+    /// </summary>
+    public List<Vector2Int> GetAttackCells()
+    {
+        return GetAttackCells(GridPos, Facing);
+    }
+
+    /// <summary>
+    /// Достаёт ли юнит ударом клетку targetCell, находясь на клетке from:
+    /// юнит сам развернётся в сторону цели (FacingToward), поэтому проверка НЕ
+    /// зависит от текущего Facing. Базовая реализация — по геометрии зоны атаки,
+    /// поэтому корректна для Militia/Warrior/Spearman. Классы с НЕзональной
+    /// атакой (Slinger — выстрел по радиусу с линией видимости) переопределяют.
+    ///
+    /// Нужен ИИ, чтобы не стоять в «мёртвой зоне»: раньше вступление в бой
+    /// проверялось только дистанцией (Чебышёв &lt;= PreferredAttackRange), и
+    /// Копейщик, реальная зона которого — ровно дистанция 2, замирал, когда цель
+    /// подходила вплотную: два копейщика просто смотрели друг на друга (P0).
+    /// </summary>
+    public virtual bool CanAttackCellFrom(Vector2Int from, Vector2Int targetCell)
+    {
+        if (from == targetCell) return false; // нулевой вектор направления
+
+        Vector2Int facing = FacingToward(from, targetCell);
+
+        return GetAttackCells(from, facing).Contains(targetCell);
+    }
+
+    /// <summary>
+    /// Разворот из клетки from в сторону клетки to, квантованный до одного из
+    /// 8 секторов сетки: компоненты разницы сжимаются до знака, диагональ
+    /// сохраняется. Для совпадающих клеток возвращается (0,1) — «вперёд»
+    /// (защита от нулевого направления, как было в EnemyAI.FaceTarget).
+    /// </summary>
+    public static Vector2Int FacingToward(Vector2Int from, Vector2Int to)
+    {
+        Vector2Int diff = to - from;
+
+        Vector2Int facing = new Vector2Int(
+            Mathf.Clamp(diff.x, -1, 1),
+            Mathf.Clamp(diff.y, -1, 1)
+        );
+
+        return facing == Vector2Int.zero ? new Vector2Int(0, 1) : facing;
+    }
+
+    /// <summary>
     /// Анимация атаки: базовый Unit не знает форм удара — производные классы
     /// вызывают этот хук из своей TryAttack() после успешного выбора целей.
     /// </summary>
@@ -195,8 +254,10 @@ public class Unit : MonoBehaviour
         BuildRendererCache();
 
         // Animator может отсутствовать (старые префабы-кубы) — это допустимо,
-        // анимация атаки просто не проиграется.
-        animator = GetComponent<Animator>();
+        // анимация атаки просто не проиграется. Ищем и в дочерних объектах
+        // (аниматор обычно живёт на модели), включая выключенные — иначе на
+        // префабах с отключённой моделью триггер атаки молча терялся.
+        animator = GetComponentInChildren<Animator>(true);
 
         // ИИ врагов: если это вражеский юнит — навешиваем EnemyAI кодом
         // (компонент появляется автоматически сразу после регистрации на сетке).

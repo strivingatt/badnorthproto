@@ -10,9 +10,12 @@ using UnityEngine;
 ///    метрика Чебышёва max(|dx|,|dy|) от GridPos — Fix-1, баг Б; раньше был
 ///    Manhattan, из-за чего диагональный сосед считался «далёким» и враг
 ///    строил путь В клетку цели) — через GridManager.GetAllUnits().
-/// 2. Если цель найдена и НЕ в зоне поражения (Чебышёв > unit.PreferredAttackRange) — строим
-///    путь Pathfinding.AStar к ближайшей СВОБОДНОЙ клетке, смежной с целью
-///    (Чебышёв = 1 от target.GridPos), и идём по нему плавно КОРУТИНОЙ
+/// 2. Если цель найдена и с ТЕКУЩЕЙ клетки её НЕ достать ударом
+///    (unit.CanAttackCellFrom == false — проверка по геометрии зоны атаки
+///    класса, а не по одной дистанции) — строим
+///    путь Pathfinding.AStar к ближайшей СВОБОДНОЙ клетке боя (кольцо
+///    PreferredAttackRange вокруг цели, ближние кольца — как запасной вариант),
+///    и идём по нему плавно КОРУТИНОЙ
 ///    MoveAlongPath (по образцу Unit.MoveAlongPath): Vector3.MoveTowards
 ///    со скоростью unit.moveSpeed, дедзона 0.01f, финальный snap в центр
 ///    целевой клетки. В саму клетку цели путь НЕ строится — это исключает
@@ -25,11 +28,15 @@ using UnityEngine;
 ///    Реестр НЕ является частью occupancy и НЕ влияет на бой (зоны атаки,
 ///    GetAllUnits, кулдаун его не видят). Клейм освобождается при достижении
 ///    цели, при новом пересчёте пути и в OnDestroy (покрывает смерть юнита).
-/// 3. Если цель в зоне поражения (Чебышёв <= unit.PreferredAttackRange:
-///    1 для ближнего боя = смежность по 8 направлениям, 2 у Копейщика,
-///    3 у Пращника) — останавливаемся (MoveTowards НЕ вызываем) и смотрим
+/// 3. Если цель достаётся ударом с текущей клетки
+///    (unit.CanAttackCellFrom: у Militia/Warrior — смежность, у Копейщика —
+///    копьё на дистанции 2 ИЛИ укол вплотную, у Пращника — радиус с линией
+///    видимости) — останавливаемся (MoveTowards НЕ вызываем) и смотрим
 ///    на цель (Facing + ApplyFacing); атаку выполняет CombatResolver,
 ///    вызывая TryAttack() с общего тика — сам ИИ НЕ дерёт.
+///    Проверка именно по геометрии атаки, а НЕ по дистанции: у Копейщика есть
+///    «мёртвая зона» вплотную копьём, из-за которой враг, подошедший слишком
+///    близко, замирал без ударов (баг P0: два копейщика смотрели друг на друга).
 /// 4. Если цель умерла (unity-null) или ушла за пределы detectionRange — сброс
 ///    и поиск новой цели.
 /// 5. Путь пересчитывается НЕ каждый кадр, а с интервалом repathInterval (0.5с)
@@ -178,13 +185,17 @@ public class EnemyAI : MonoBehaviour
             return;
         }
 
-        int dist = DistanceInCells(unit.GridPos, target.GridPos);
-
-        if (dist <= EngagementRange())
+        // Боевая позиция: цель достаётся ударом ОТСЮДА. Проверяем не дистанцию,
+        // а геометрию атаки класса (CanAttackCellFrom): у Копейщика зона — копьё
+        // на дистанции 2, поэтому одной дистанции мало — цель, подошедшая
+        // вплотную (Чебышёв = 1), ставила врага в ступор (баг P0: два копейщика
+        // стояли и смотрели друг на друга). Разворот внутри проверки считается
+        // к цели, поэтому результат не зависит от текущего Facing.
+        if (unit.CanAttackCellFrom(unit.GridPos, target.GridPos))
         {
-            // Цель смежна с нами (Чебышёв <= 1 — зона атаки, п.3 ТЗ Fix-1):
-            // останавливаемся (MoveTowards НЕ вызываем), разворачиваемся лицом
-            // к цели. Атаковать будет CombatResolver своим тиком TryAttack().
+            // Достаём цель: останавливаемся (MoveTowards НЕ вызываем),
+            // разворачиваемся лицом к цели. Атаковать будет CombatResolver
+            // своим тиком TryAttack().
             StopMovement();
             FaceTarget();
             return;
@@ -322,9 +333,9 @@ public class EnemyAI : MonoBehaviour
     }
 
     /// <summary>
-    /// Дистанция вступления в бой для ХОЗЯИНА ИИ: берётся из боевого класса
-    /// юнита (unit.PreferredAttackRange: Militia/Warrior = 1, Spearman = 2,
-    /// Slinger = 3). Для базового Unit без класса — fallbackAttackRange.
+    /// Дистанция вступления в бой (и приоритетное кольцо позиции) для ХОЗЯИНА ИИ:
+    /// берётся из боевого класса юнита (unit.PreferredAttackRange: Militia/Warrior = 1,
+    /// Spearman = 2, Slinger = 3). Для базового Unit без класса — fallbackAttackRange.
     /// </summary>
     private int EngagementRange()
     {
@@ -332,33 +343,56 @@ public class EnemyAI : MonoBehaviour
     }
 
     /// <summary>
-    /// Выбрать цель пути: свободную клетку на КОЛЬЦЕ дистанции
-    /// PreferredAttackRange от цели (Чебышёв = R; для ближнего боя R = 1 —
-    /// это те же 8 смежных клеток, что и раньше). Дальние классы (Копейщик
-    /// R=2, Пращник R=3) встают на соответствующем удалении — вплотную не
-    /// лезут. Из подходящих берём ближайшую к нам по Чебышёву: в границах,
-    /// не заблокирована (stone), GetOccupant == null, НЕ заклеймлена другим
-    /// врагом. Подходящих нет — возвращаем null (враг стоит на месте; в
-    /// клетку цели и в занятую клетку входить запрещено). Клетка самого
-    /// юнита в рассмотрение не входит (если он уже на нужном кольце — Update
-    /// остановит его до вызова репаттинга).
+    /// Выбрать клетку боя: сначала кольцо дистанции PreferredAttackRange вокруг цели
+    /// (для ближнего боя R = 1 — те же 8 смежных клеток, что и раньше), затем
+    /// кольца БЛИЖЕ к цели по убыванию (запасной вариант: если на «дистанции боя»
+    /// всё занято/заблокировано, враг всё равно вступает в бой там, где достаёт).
+    /// Подходящих клеток нет ни на одном кольце — null (враг стоит на месте;
+    /// вход в клетку цели и в занятую клетку запрещён).
     /// </summary>
     private Vector2Int? FindAttackPositionCell(Vector2Int targetCell)
     {
-        var gm = GridManager.Instance;
-
         int r = EngagementRange();
+
+        // Кольцо «дистанции боя» в приоритете: Копейщик встаёт на 2 клетки, а не
+        // липнет вплотную; кольца 1..r-1 — только если на основном кольце нет
+        // ни одной клетки, с которой цель реально достаётся.
+        for (int ring = r; ring >= 1; ring--)
+        {
+            Vector2Int? cell = FindAttackCellOnRing(targetCell, ring);
+
+            if (cell != null)
+            {
+                return cell;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Свободная клетка для удара по цели на КОЛЬЦЕ Чебышёва-радиуса ring
+    /// (клетки, у которых max(|dx|,|dy|) == ring ровно). Кандидат отбрасывается,
+    /// если он: занят нами, вне границ, заблокирован камнем, занят юнитом,
+    /// заклеймён другим врагом ИЛИ с него цель НЕ достаётся ударом
+    /// (Unit.CanAttackCellFrom — учитывает форму зоны атаки класса, поэтому
+    /// Копейщик не выбирает «косые» клетки вида (2,1), откуда копьё не бьёт).
+    /// Из подходящих берём ближайшую к нам по Чебышёву.
+    /// </summary>
+    private Vector2Int? FindAttackCellOnRing(Vector2Int targetCell, int ring)
+    {
+        var gm = GridManager.Instance;
 
         Vector2Int? best = null;
         int bestDist = int.MaxValue;
 
-        // Обход квадратной рамки Чебышёва-радиуса r вокруг цели: клетки,
-        // у которых max(|dx|,|dy|) == r ровно (сторона 2r+1 минус внутренность).
-        for (int dx = -r; dx <= r; dx++)
+        // Обход квадратной рамки Чебышёва-радиуса ring вокруг цели: сторона
+        // 2*ring+1 минус внутренность.
+        for (int dx = -ring; dx <= ring; dx++)
         {
-            for (int dy = -r; dy <= r; dy++)
+            for (int dy = -ring; dy <= ring; dy++)
             {
-                if (Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy)) != r) continue;
+                if (Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy)) != ring) continue;
 
                 Vector2Int cell = targetCell + new Vector2Int(dx, dy);
 
@@ -371,6 +405,9 @@ public class EnemyAI : MonoBehaviour
                 if (gm.GetOccupant(cell) != null) continue; // занят юнитом
 
                 if (claimedCells.Contains(cell)) continue;  // заклеймён другим врагом
+
+                // С этой клетки копьё/удар реально достаёт цель?
+                if (!unit.CanAttackCellFrom(cell, targetCell)) continue;
 
                 int dist = DistanceInCells(unit.GridPos, cell);
 
@@ -498,9 +535,10 @@ public class EnemyAI : MonoBehaviour
 
     /// <summary>
     /// Развернуть юнита лицом к цели (чтобы зона атаки GetAttackCells смотрела
-    /// в сторону противника). Facing приводится к одному из 8 секторов сетки:
-    /// по компонентам разницы позиций берём знак; диагональ сохраняется.
-    /// После установки Facing — unit.ApplyFacing() (тот же поворот, что у игрока).
+    /// в сторону противника). Facing квантуется до одного из 8 секторов сетки
+    /// через Unit.FacingToward (тот же clamp разницы позиций, что и раньше:
+    /// диагональ сохраняется). После установки Facing — unit.ApplyFacing()
+    /// (тот же поворот, что у игрока).
     /// </summary>
     private void FaceTarget()
     {
@@ -509,18 +547,7 @@ public class EnemyAI : MonoBehaviour
             return;
         }
 
-        Vector2Int diff = target.GridPos - unit.GridPos;
-
-        Vector2Int facing = new Vector2Int(
-            Mathf.Clamp(diff.x, -1, 1),
-            Mathf.Clamp(diff.y, -1, 1)
-        );
-
-        // Совпадение клеток невозможно (dist > 0), но защита от нулевого вектора:
-        if (facing == Vector2Int.zero)
-        {
-            facing = new Vector2Int(0, 1);
-        }
+        Vector2Int facing = Unit.FacingToward(unit.GridPos, target.GridPos);
 
         if (unit.Facing != facing)
         {

@@ -5,7 +5,12 @@ using UnityEngine;
 /// Спавнит стартовый отряд: блок 4x2 (ширина 4 по X, глубина 2 по Y сетки)
 /// от клетки spawnOrigin. Позиционирует юнитов через GridManager.GridToWorld,
 /// резервирует за ними клетки и собирает в Squad.
-/// Плюс дебаг-спавн отряда врагов по клавише E.
+/// Плюс спавн волн врагов: SpawnWave(count) вызывается из WaveManager.
+///
+/// ТИП ЮНИТА ОПРЕДЕЛЯЕТСЯ ПРЕФАБОМ: playerUnitPrefab и enemyUnitPrefab независимы,
+/// боевой класс (Militia/Spearman/Warrior/Slinger) и статы берутся из компонента Unit
+/// на соответствующем префабе. Код НЕ добавляет боевые классы на лету — иначе на одном
+/// GameObject оказалось бы два Unit-компонента (двойной урон/кулдаун/EnemyAI).
 /// </summary>
 public class SquadSpawner : MonoBehaviour
 {
@@ -31,23 +36,20 @@ public class SquadSpawner : MonoBehaviour
     }
 
     [Header("Spawn Settings")]
-    public GameObject unitPrefab;
+    [Tooltip("Префаб юнитов ИГРОКА. Боевой класс (Militia/Spearman/Warrior/Slinger) " +
+             "и его статы берутся из компонента Unit НА ЭТОМ префабе.")]
+    [SerializeField] private GameObject playerUnitPrefab;
+
+    [Tooltip("Префаб ВРАЖЕСКИХ юнитов волн. Класс и статы — из компонента Unit на этом " +
+             "префабе, поэтому тип врага НЕ зависит от типа юнитов игрока. " +
+             "Пусто — волна не спавнится (ошибка в консоли).")]
+    [SerializeField] private GameObject enemyUnitPrefab;
+
     public Material matUnit;
     public Vector2Int spawnOrigin = new Vector2Int(10, 10);
 
-    [Tooltip("Боевой класс юнитов игрока (null = Unit — юнит не атакует). " +
-             "Militia — базовый ближний бой. Поле сериализуется как UnityEngine.Object: " +
-             "в инспекторе можно выбрать скрипт Militia/Warrior/Spearman/Slinger — " +
-             "компонент нужного типа добавится к префабу при спавне.")]
-    public MonoBehaviour playerUnitClass;
-
-    [Tooltip("Боевой класс вражеских юнитов волн (null = Unit — не атакуют). " +
-             "Можно назначить Slinger — тогда враги стреляют с дистанции 3 и " +
-             "останавливаются на PreferredAttackRange (логика EnemyAI общая).")]
-    public MonoBehaviour enemyUnitClass;
-
     [Header("Combat Visuals")]
-    [Tooltip("Материал вражеских юнитов (дебаг-спавн по E).")]
+    [Tooltip("Материал вражеских юнитов волн. Если не назначен — остаётся родной материал префаба врага.")]
     public Material matEnemy;
 
     [Tooltip("Материал вспышки при получении урона (назначается всем юнитам).")]
@@ -61,18 +63,20 @@ public class SquadSpawner : MonoBehaviour
         SpawnSquad();
     }
 
-    private void Update()
-    {
-        // Дебаг-клавиша E переехала в InputController: теперь она запускает
-        // первую волну через WaveManager.StartNextWave(). SpawnEnemySquad()
-        // оставлен приватной обёрткой для обратной совместимости.
-    }
-
     private void SpawnSquad()
     {
-        if (unitPrefab == null)
+        if (playerUnitPrefab == null)
         {
-            Debug.LogError("[SquadSpawner] unitPrefab не назначен — спавн отменён.");
+            Debug.LogError($"[{nameof(SquadSpawner)}] playerUnitPrefab не назначен — спавн отменён.");
+            return;
+        }
+
+        // Класс юнита задаётся префабом: проверяем его ДО цикла, иначе каждый инстанс
+        // пришлось бы уничтожать с ошибкой в консоли.
+        if (playerUnitPrefab.GetComponent<Unit>() == null)
+        {
+            Debug.LogError($"[{nameof(SquadSpawner)}] На префабе игрока '{playerUnitPrefab.name}' " +
+                           "нет компонента Unit — спавн отменён.");
             return;
         }
 
@@ -102,13 +106,23 @@ public class SquadSpawner : MonoBehaviour
                     continue;
                 }
 
-                var go = Instantiate(unitPrefab);
+                var go = Instantiate(playerUnitPrefab);
                 go.name = $"Unit_{cell.x}_{cell.y}";
 
                 // Позиционируем в центр клетки ещё до Init, чтобы юнит был «на месте».
                 go.transform.position = GridManager.Instance.GridToWorld(cell);
 
-                var unit = EnsureUnitClass(go, playerUnitClass);
+                // Класс берётся из префаба (Militia/Spearman/Warrior/Slinger),
+                // никаких AddComponent на лету.
+                var unit = GetUnitOrNull(go);
+
+                if (unit == null)
+                {
+                    Debug.LogError($"[{nameof(SquadSpawner)}] Инстанс префаба игрока без компонента " +
+                                   $"Unit — клетка {cell} пропущена.");
+                    rejectedCount++;
+                    continue;
+                }
 
                 unit.Init(cell, squad);
 
@@ -142,16 +156,24 @@ public class SquadSpawner : MonoBehaviour
     /// клетки (IsFree) — каждая уникальна. Если свободных меньше count —
     /// выбирается новая anchor (максимум spawnAnchorAttempts попыток); после
     /// исчерпания попыток спавнится сколько влезло + warning.
-    /// Статы НЕ масштабируются — берутся из префаба как есть (maxHp = 5).
+    /// Статы НЕ масштабируются — берутся из префаба врага (enemyUnitPrefab) как есть.
     /// </summary>
     public void SpawnWave(int count)
     {
         var gm = GridManager.Instance;
         if (gm == null) return;
 
-        if (unitPrefab == null)
+        if (enemyUnitPrefab == null)
         {
-            Debug.LogError("[SquadSpawner] unitPrefab не назначен — волна отменена.");
+            Debug.LogError($"[{nameof(SquadSpawner)}] enemyUnitPrefab не назначен — волна отменена.");
+            return;
+        }
+
+        // Класс врага задаётся префабом врага: проверяем ДО цикла инстансов.
+        if (enemyUnitPrefab.GetComponent<Unit>() == null)
+        {
+            Debug.LogError($"[{nameof(SquadSpawner)}] На префабе врага '{enemyUnitPrefab.name}' " +
+                           "нет компонента Unit — волна отменена.");
             return;
         }
 
@@ -197,17 +219,31 @@ public class SquadSpawner : MonoBehaviour
                 Vector2Int cell = cells[index];
                 cells.RemoveAt(index); // этот враг занял клетку — остальные не могут
 
-                GameObject go = Instantiate(unitPrefab);
+                GameObject go = Instantiate(enemyUnitPrefab);
                 go.transform.position = gm.GridToWorld(cell);
 
-                Unit unit = EnsureUnitClass(go, enemyUnitClass);
+                // Класс врага приходит ИЗ ПРЕФАБА ВРАГА и не зависит от префаба игрока.
+                Unit unit = GetUnitOrNull(go);
+
+                if (unit == null)
+                {
+                    Debug.LogError($"[{nameof(SquadSpawner)}] Инстанс префаба врага без компонента " +
+                                   $"Unit — клетка {cell} пропущена.");
+                    continue;
+                }
 
                 // НИКАКИХ МНОЖИТЕЛЕЙ! Статы берутся из класса-префаба.
                 unit.team = Team.Enemy;
                 unit.Facing = new Vector2Int(0, 1);
                 unit.matHit = matHit;
                 unit.Init(cell, enemySquad);   // сначала Init — строит кэш
-                unit.SetDefaultVisual(matEnemy); // потом краска — кэш уже есть
+
+                // Красим врага ТОЛЬКО если материал задан: иначе остаётся родной
+                // материал префаба (кэш для восстановления уже построен в Init).
+                if (matEnemy != null)
+                {
+                    unit.SetDefaultVisual(matEnemy);
+                }
 
                 enemySquad.Add(unit);
                 spawned++;
@@ -270,38 +306,24 @@ public class SquadSpawner : MonoBehaviour
     }
 
     /// <summary>
-    /// Достать/добавить компонент боевого класса на инстанс префаба.
-    /// Если назначен playerUnitClass/enemyUnitClass (Militia/Warrior/...),
-    /// берём компонент этого типа; иначе — базовый Unit (он НЕ атакует:
-    /// TryAttack виртуальный, базовая реализация возвращает false).
-    /// GetComponent&lt;Unit&gt; находит и наследников (UpCast), поэтому проверка
-    /// «уже есть» защищает от дублей при повторном спавне одного GO.
+    /// Достать боевой класс с инстанса префаба.
+    /// Класс определяется ИСКЛЮЧИТЕЛЬНО префабом (наследник Unit на корне объекта:
+    /// Militia/Spearman/Warrior/Slinger). GetComponent&lt;Unit&gt; находит и наследников,
+    /// поэтому AddComponent не нужен и дублей Unit на одном GameObject не возникает.
+    /// Если компонента нет — инстанс уничтожается (чтобы не оставлять на сцене объект
+    /// без логики) и возвращается null.
     /// </summary>
-    private static Unit EnsureUnitClass(GameObject go, MonoBehaviour unitClass)
+    private static Unit GetUnitOrNull(GameObject go)
     {
-        System.Type type = (unitClass != null) ? unitClass.GetType() : typeof(Unit);
+        Unit unit = go.GetComponent<Unit>();
 
-        Unit existing = go.GetComponent<Unit>();
-        if (existing != null && existing.GetType() == type)
+        if (unit == null)
         {
-            return existing;
+            Debug.LogError($"[{nameof(SquadSpawner)}] На инстансе '{go.name}' нет компонента Unit — инстанс уничтожен.");
+            Destroy(go);
+            return null;
         }
 
-        Component c = go.GetComponent(type);
-        if (c is Unit u)
-        {
-            return u;
-        }
-
-        return go.AddComponent(type) as Unit;
-    }
-
-    /// <summary>
-    /// Обратная совместимость: дебаг-спавн отряда врагов (клавиша E) —
-    /// теперь обёртка над SpawnWave.
-    /// </summary>
-    private void SpawnEnemySquad()
-    {
-        SpawnWave(4);
+        return unit;
     }
 }
