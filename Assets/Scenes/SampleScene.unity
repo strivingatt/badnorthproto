@@ -356,7 +356,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SquadSpawner
   playerUnitPrefab: {fileID: 8176311020894018089, guid: 563a274546e5f394d91ab5ce53deeeac, type: 3}
-  enemyUnitPrefab: {fileID: 8176311020894018089, guid: 563a274546e5f394d91ab5ce53deeeac, type: 3}
+  enemyUnitPrefab: {fileID: 2853641944360342225, guid: 8c412e563abbdfb40855f00bdecdb185, type: 3}
   matUnit: {fileID: 2100000, guid: 18b13219ddad2fa47a55902ae7ce5774, type: 2}
   spawnOrigin: {x: 18, y: 18}
   matEnemy: {fileID: 2100000, guid: fbb9f58e65bcd0a4e8f18f5c17f6726a, type: 2}
@@ -393,6 +393,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 1956547230}
   - {fileID: 354917512}
   - {fileID: 1682924989}
   - {fileID: 1186794681}
@@ -874,6 +875,58 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: edc503ff90455c041b7f9b4a394991a5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ITextDisplay
+--- !u!1 &1956547229
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1956547230}
+  - component: {fileID: 1956547231}
+  m_Layer: 0
+  m_Name: Terrain Generator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1956547230
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1956547229}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 954305207}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1956547231
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1956547229}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c8a6a810367d32646857d0e3f660e336, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TerrainGenerator
+  mapSize: 36
+  noiseScale: 0.08
+  waterThreshold: 0.255
+  seed: 0
+  randomRotation: 0
+  grassPrefab: {fileID: 1889091896709056828, guid: 966f92f1b1e0db74289bcff33f662696, type: 3}
+  waterPrefab: {fileID: 7386577583706058019, guid: 62a219fd006b5194d8cc60abc4e909be, type: 3}
+  tilesParent: {fileID: 0}
 --- !u!1 &1988891257
 GameObject:
   m_ObjectHideFlags: 0
