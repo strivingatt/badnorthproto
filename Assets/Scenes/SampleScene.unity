@@ -355,11 +355,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f7f8aaea3ffa63c41900880be631070a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SquadSpawner
-  unitPrefab: {fileID: 8176311020894018089, guid: 563a274546e5f394d91ab5ce53deeeac, type: 3}
+  playerUnitPrefab: {fileID: 8176311020894018089, guid: 563a274546e5f394d91ab5ce53deeeac, type: 3}
+  enemyUnitPrefab: {fileID: 8176311020894018089, guid: 563a274546e5f394d91ab5ce53deeeac, type: 3}
   matUnit: {fileID: 2100000, guid: 18b13219ddad2fa47a55902ae7ce5774, type: 2}
   spawnOrigin: {x: 18, y: 18}
-  playerUnitClass: {fileID: 0}
-  enemyUnitClass: {fileID: 0}
   matEnemy: {fileID: 2100000, guid: fbb9f58e65bcd0a4e8f18f5c17f6726a, type: 2}
   matHit: {fileID: 2100000, guid: a914552835aa4a64e81cb15ce2c7a753, type: 2}
   edgeRingWidth: 3
