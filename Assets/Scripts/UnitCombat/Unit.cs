@@ -604,7 +604,8 @@ public class Unit : MonoBehaviour
 
         if (hp <= 0)
         {
-            Die();
+            // Убийца передаётся в Die(), чтобы засчитать убийство отряду-атакующему.
+            Die(attacker);
         }
     }
 
@@ -653,10 +654,12 @@ public class Unit : MonoBehaviour
     }
 
     /// <summary>
-    /// Смерть юнита: остановить вспышку, освободить клетку, убрать себя
-    /// из отряда, уничтожить объект.
+    /// Смерть юнита: остановить вспышку, освободить клетку, учесть потерю/
+    /// убийство в счётчиках отрядов, убрать себя из отряда, уничтожить объект.
     /// </summary>
-    public void Die()
+    /// <param name="killer">Юнит, нанёсший смертельный удар (может быть null —
+    /// тогда убийство не засчитывается никому, потеря отряда учитывается всегда).</param>
+    public void Die(Unit killer = null)
     {
         // Защита от двойной смерти (Fix-1, баг В): Destroy(gameObject) отложен
         // до конца кадра, поэтому при двух ударах в одном тике Die() мог
@@ -664,7 +667,25 @@ public class Unit : MonoBehaviour
         if (isDead) return;
         isDead = true;
 
-        Debug.Log($"[Combat] {name} погиб");
+        // Учёт боя: свой отряд всегда теряет бойца; убийство засчитывается
+        // отряду убийцы только если он из ДРУГОЙ команды (дружественный урон
+        // убийством не считается).
+        if (Squad != null)
+        {
+            Squad.RegisterLoss();
+        }
+
+        if (killer != null && killer.team != team && killer.Squad != null)
+        {
+            killer.Squad.RegisterKill();
+        }
+
+        string killerName = (killer != null) ? killer.name : "нет";
+        int ownLosses = (Squad != null) ? Squad.losses : 0;
+        int killerKills = (killer != null && killer.Squad != null) ? killer.Squad.kills : 0;
+
+        Debug.Log($"[Combat] {name} погиб (убийца: {killerName}, " +
+                  $"потерь в своём отряде: {ownLosses}, убийств у отряда убийцы: {killerKills})");
 
         if (flashCoroutine != null)
         {

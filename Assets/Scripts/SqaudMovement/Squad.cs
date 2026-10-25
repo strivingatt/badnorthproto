@@ -9,6 +9,30 @@ public class Squad : MonoBehaviour
     /// <summary>Юниты, входящие в отряд.</summary>
     public List<Unit> units = new List<Unit>();
 
+    /// <summary>
+    /// Сколько врагов уничтожил этот отряд (счётчик ведётся из Unit.Die).
+    /// Нужен как основа для будущей системы опыта/прокачки.
+    /// </summary>
+    public int kills;
+
+    /// <summary>
+    /// Сколько своих юнитов отряд потерял (счётчик ведётся из Unit.Die).
+    /// Нужен как основа для будущей системы морали.
+    /// </summary>
+    public int losses;
+
+    /// <summary>Зарегистрировать убийство врага юнитом этого отряда.</summary>
+    public void RegisterKill()
+    {
+        kills++;
+    }
+
+    /// <summary>Зарегистрировать потерю своего юнита.</summary>
+    public void RegisterLoss()
+    {
+        losses++;
+    }
+
     /// <summary>Добавить юнит в отряд (null игнорируется).</summary>
     public void Add(Unit u)
     {
