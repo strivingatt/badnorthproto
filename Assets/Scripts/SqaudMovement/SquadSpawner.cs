@@ -56,7 +56,7 @@ public class SquadSpawner : MonoBehaviour
     public Material matHit;
 
     private const int BlockWidth = 4;  // ширина блока по оси X сетки
-    private const int BlockHeight = 2; // глубина блока по оси Y сетки
+    private const int BlockHeight = 3; // глубина блока по оси Y сетки (4×3 = 12 бойцов, как в GDD.md)
 
     private void Start()
     {
