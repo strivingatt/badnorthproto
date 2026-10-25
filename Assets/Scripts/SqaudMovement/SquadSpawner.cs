@@ -58,8 +58,33 @@ public class SquadSpawner : MonoBehaviour
     private const int BlockWidth = 4;  // ширина блока по оси X сетки
     private const int BlockHeight = 3; // глубина блока по оси Y сетки (4×3 = 12 бойцов, как в GDD.md)
 
+    // Корутина ожидания генерации рельефа: TerrainGenerator строит карту и
+    // блокирует воду в GridManager; отряд и волны должны спавниться уже по
+    // готовой сетке blocked-клеток, иначе юниты могут встать на воду.
+    private const int TerrainWaitMaxFrames = 10;
+
     private void Start()
     {
+        StartCoroutine(SpawnAfterTerrain());
+    }
+
+    /// <summary>
+    /// Ждём появления TerrainGenerator (максимум несколько кадров), затем
+    /// спавним стартовый отряд. Если генератора на сцене нет — спавним сразу
+    /// (обратная совместимость со старой сценой без тайлов).
+    /// </summary>
+    private System.Collections.IEnumerator SpawnAfterTerrain()
+    {
+        var generator = TerrainGenerator.Instance;
+        int waited = 0;
+
+        while (generator == null && waited < TerrainWaitMaxFrames)
+        {
+            yield return null;
+            waited++;
+            generator = TerrainGenerator.Instance;
+        }
+
         SpawnSquad();
     }
 
@@ -148,6 +173,20 @@ public class SquadSpawner : MonoBehaviour
     }
 
     /// <summary>
+    /// Проходимость клетки для спавна: клетка не должна быть заблокирована
+    /// (вода/камень) и должна быть свободна от юнитов. IsFree покрывает
+    /// блокировку terrain-генератором и ObstaclePlacer'ом; отдельная проверка
+    /// IsBlocked добавлена явно по требованию «враги только на проходимых
+    /// клетках» — если клетка заблокирована водой, она не попадёт в кандидаты,
+    /// и спавн выберет другую.
+    /// </summary>
+    private static bool IsSpawnableCell(GridManager gm, Vector2Int cell)
+    {
+        if (gm.IsBlocked(cell)) return false; // вода/камень — не спавнимся
+        return gm.IsFree(cell);               // + границы и занятость юнитами
+    }
+
+    /// <summary>
     /// Спавн волны врагов: count юнитов КОМПАКТНОЙ ГРУППОЙ в одном случайном
     /// месте на краю карты (кольцо шириной edgeRingWidth клеток). Берётся
     /// случайная anchor-клетка края, вокруг неё строится квадрат
@@ -209,7 +248,9 @@ public class SquadSpawner : MonoBehaviour
                 for (int x = minX; x < minX + spawnBlockSize; x++)
                 {
                     var cell = new Vector2Int(x, y);
-                    if (gm.IsFree(cell)) cells.Add(cell);
+                    // Только проходимые клетки: заблокированная вода/камень
+                    // отбраковывается, спавн берёт другую клетку блока.
+                    if (IsSpawnableCell(gm, cell)) cells.Add(cell);
                 }
             }
 
@@ -293,7 +334,8 @@ public class SquadSpawner : MonoBehaviour
                 if (!onEdge) continue;
 
                 var cell = new Vector2Int(x, y);
-                if (gm.IsFree(cell)) candidates.Add(cell);
+                // Anchor тоже только на проходимой клетке (не в воде).
+                if (IsSpawnableCell(gm, cell)) candidates.Add(cell);
             }
         }
 
