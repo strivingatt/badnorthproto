@@ -75,6 +75,13 @@ public class Squad : MonoBehaviour
     /// логируется warning. Инвариант: каждый живой юнит команды либо успешно
     /// стартовал, либо остался на своей клетке СОХРАНЯЯ регистрацию в occupancy.
     ///
+    /// ИЗМЕНЕНИЕ (Fix-5, баг «нет места»): пара с null-путём больше НЕ бросается
+    /// молча — юниту подбирается ближайшая достижимая клетка (TryFindReachableTarget:
+    /// перебор от ближайших, приоритет полностью свободным клеткам, обязательная
+    /// проверка A*). Также обрабатываются юниты, которым слот не достался вовсе
+    /// (слотов меньше, чем живых бойцов). Прежний warning и «остаюсь на месте»
+    /// остаются только для случая, когда подходящей клетки нет вообще.
+    ///
     /// ИЗМЕНЕНИЕ (исправление бага «урон до подхода»): целевая клетка НЕ
     /// резервируется заранее — TryOccupy(slot, unit) из этого метода УБРАН, вместе
     /// с блоком отката при занятом слоте. Почему:
@@ -122,11 +129,17 @@ public class Squad : MonoBehaviour
         var pairs = SlotAssigner.Assign(aliveUnits, slots);
 
         // Проход 0 (Fix-2, баг А): расчёт путей A* ДО освобождения клеток.
-        // Пары с null-путём (слот под камнем / заблокирован / вне границ)
-        // исключаются полностью: их клетки не освобождаются в проходе 1,
-        // движение не запускается в проходе 2 — юнит остаётся на своей клетке
-        // с сохранённой регистрацией в occupancy (не становится «призраком»).
+        // Пары с null-путём (слот под камнем / заблокирован / вне границ) больше
+        // НЕ бросаются (Fix-5): юниту подбирается ближайшая достижимая цель.
+        // Если и её нет — юнит остаётся на своей клетке с сохранённой регистрацией
+        // в occupancy (не становится «призраком»).
         var validPairs = new List<(Unit unit, Vector2Int slot, Vector2Int oldPos, List<Vector2Int> path)>(pairs.Count);
+
+        // Клетки, уже занятые целями этой команды: две пары не должны метить в одну клетку.
+        var reservedTargets = new HashSet<Vector2Int>();
+
+        // Юниты, которым слот назначен — нужны, чтобы найти «безслотных» ниже.
+        var pairedUnits = new HashSet<Unit>();
 
         foreach (var pair in pairs)
         {
@@ -138,21 +151,69 @@ public class Squad : MonoBehaviour
                 continue;
             }
 
+            pairedUnits.Add(unit);
+
             // ФАКТИЧЕСКАЯ стартовая позиция юнита на момент приказа — она же
             // start для A* (путь строим ЗДЕСЬ, до FreeUnit, от реального положения).
             Vector2Int oldPos = unit.GridPos;
 
             List<Vector2Int> path = Pathfinding.AStar(oldPos, pair.slot);
+            Vector2Int target = pair.slot;
 
             if (path == null)
             {
-                Debug.LogWarning($"[Squad] CommandFormation: путь недоступен " +
-                                 $"({oldPos} -> {pair.slot}) — юнит {unit.name} " +
-                                 $"остаётся на месте, слот пропущен.");
+                // Слот недостижим — ищем ближайшую подходящую клетку рядом с ним.
+                if (TryFindReachableTarget(oldPos, pair.slot, reservedTargets,
+                                           out Vector2Int alternate, out List<Vector2Int> alternatePath))
+                {
+                    Debug.Log($"[Squad] CommandFormation: слот {pair.slot} недостижим из {oldPos} — " +
+                              $"юнит {unit.name} займёт ближайшую возможную клетку {alternate}.");
+
+                    target = alternate;
+                    path = alternatePath;
+                }
+                else
+                {
+                    Debug.LogWarning($"[Squad] CommandFormation: путь недоступен " +
+                                     $"({oldPos} -> {pair.slot}) и подходящих клеток рядом нет — " +
+                                     $"юнит {unit.name} остаётся на месте, слот пропущен.");
+                    continue;
+                }
+            }
+
+            reservedTargets.Add(target);
+            validPairs.Add((unit, target, oldPos, path));
+        }
+
+        // Юниты БЕЗ слота (слотов меньше, чем живых бойцов): им тоже подбирается
+        // ближайшая достижимая клетка — иначе они просто стоят и отстают от строя.
+        foreach (Unit unit in aliveUnits)
+        {
+            if (unit == null || unit.gameObject == null)
+            {
                 continue;
             }
 
-            validPairs.Add((unit, pair.slot, oldPos, path));
+            if (pairedUnits.Contains(unit))
+            {
+                continue;
+            }
+
+            Vector2Int oldPos = unit.GridPos;
+
+            if (TryFindReachableTarget(oldPos, oldPos, reservedTargets,
+                                       out Vector2Int alternate, out List<Vector2Int> alternatePath))
+            {
+                Debug.Log($"[Squad] CommandFormation: юниту {unit.name} не досталось слота — " +
+                          $"он займёт ближайшую возможную клетку {alternate}.");
+
+                reservedTargets.Add(alternate);
+                validPairs.Add((unit, alternate, oldPos, alternatePath));
+                continue;
+            }
+
+            Debug.LogWarning($"[Squad] CommandFormation: юниту {unit.name} не досталось слота " +
+                             $"и рядом нет подходящей клетки — юнит остаётся на месте.");
         }
 
         // Проход 1 (часть «Free»): освобождаем СТАРЫЕ клетки только пар с
@@ -187,5 +248,63 @@ public class Squad : MonoBehaviour
 
         Debug.Log($"[Squad] CommandFormation: выполнено — пар с валидным путём {validPairs.Count} " +
                   $"(из {pairs.Count}), facing = {facing}.");
+    }
+
+    /// <summary>
+    /// Сколько ближайших клеток просматривается при подборе замены недостижимому
+    /// слоту. Ограничение — страховка от перебора всей карты: для каждой клетки
+    /// считается путь A*.
+    /// </summary>
+    private const int ReplacementSearchLimit = 32;
+
+    /// <summary>
+    /// Подбор достижимой цели вместо недостижимого слота. Клетки перебираются от
+    /// ближайших к desired (Formation.EnumerateUsableCellsNearestFirst: сначала
+    /// полностью свободные, затем просто проходимые и не занятые другой целью
+    /// команды), для каждой проверяется наличие пути A* из oldPos.
+    /// </summary>
+    /// <param name="oldPos">Текущая клетка юнита — старт для A*.</param>
+    /// <param name="desired">Желаемая клетка (недостижимый слот или своя же клетка).</param>
+    /// <param name="reservedTargets">Цели, уже занятые другими парами этой команды.</param>
+    /// <param name="target">Найденная клетка-цель.</param>
+    /// <param name="path">Путь до найденной цели (гарантированно не null).</param>
+    /// <returns>true, если подходящая достижимая клетка найдена.</returns>
+    private static bool TryFindReachableTarget(Vector2Int oldPos, Vector2Int desired,
+                                               HashSet<Vector2Int> reservedTargets,
+                                               out Vector2Int target, out List<Vector2Int> path)
+    {
+        target = desired;
+        path = null;
+
+        int checkedCandidates = 0;
+
+        foreach (Vector2Int candidate in Formation.EnumerateUsableCellsNearestFirst(desired, reservedTargets))
+        {
+            // Своя же клетка целью быть не может: путь до неё пустой.
+            if (candidate == oldPos)
+            {
+                continue;
+            }
+
+            checkedCandidates++;
+
+            if (checkedCandidates > ReplacementSearchLimit)
+            {
+                return false;
+            }
+
+            List<Vector2Int> candidatePath = Pathfinding.AStar(oldPos, candidate);
+
+            if (candidatePath == null)
+            {
+                continue;
+            }
+
+            target = candidate;
+            path = candidatePath;
+            return true;
+        }
+
+        return false;
     }
 }
