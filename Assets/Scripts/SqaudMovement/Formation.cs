@@ -82,8 +82,14 @@ public static class Formation
     ///     границы — линия укорачивается (clamp всей линии к краю сетки).
     ///  5) facing = поворот dirSnapped на +90°: (-dir.y, dir.x). Шеренги смещаются НАЗАД:
     ///     slot = line[i] + (-facing) * rank, заполнение rank-major (ранг за рангом),
-    ///     ровно count слотов; если из-за границ клетки кончились — возвращается
-    ///     сколько есть и логируется Debug.LogWarning.
+    ///     ровно count слотов; клетки вне границ и клетки-камни (IsBlocked) пропускаются.
+    ///  6) Если «идеальных» клеток фигуры не хватило (упёрлись в край карты или в
+    ///     камни), включается ДОБОР: для каждой недостающей позиции ищется ближайшая
+    ///     подходящая клетка. Приоритет внутри кольца: сначала полностью свободная
+    ///     клетка (GridManager.IsFree — на ней никого нет), затем просто проходимая
+    ///     и не занятая другой целью этой же команды (свои юниты уедут со своих
+    ///     клеток). Поэтому функция возвращает ровно count слотов, а не «сколько
+    ///     влезло»: юниты без места занимают ближайшее возможное.
     /// </summary>
     public static List<Vector2Int> GetLineSlots(Vector2Int start, Vector2Int end, int count, out Vector2Int facing)
     {
@@ -136,11 +142,15 @@ public static class Formation
 
         var slots = new List<Vector2Int>(count);
 
+        // Клетки, уже отданные под слот: одна клетка не может быть целью двух юнитов.
+        var used = new HashSet<Vector2Int>();
+
         // Потолок рангов: дальше всех возможных шеренг заведомо нет ни одной клетки
         // в границах (координата клетки не может уйти дальше 2*size шагов назад).
         int maxRank = count + 2 * (gm != null ? gm.size : 64);
 
         // Заполнение ПО ШЕРЕНГАМ (rank-major): rank = 0, 1, 2, ...
+        // Неподходящие клетки (вне границ, камни, уже занятые слотом) пропускаются.
         for (int rank = 0; rank <= maxRank && slots.Count < count; rank++)
         {
             Vector2Int offset = back * rank; // смещение шеренги НАЗАД
@@ -149,26 +159,160 @@ public static class Formation
             {
                 Vector2Int cell = start + dir * i + offset;
 
-                // Пропускаем слоты вне границ — вместо них пойдёт следующий.
-                if (gm != null && !gm.InBounds(cell))
+                if (!IsSlotUsable(cell, used))
                 {
                     continue;
                 }
 
                 slots.Add(cell);
+                used.Add(cell);
+            }
+        }
+
+        int placedByShape = slots.Count;
+
+        // ДОБОР (п. 6 спецификации): фигура не поместилась целиком — недостающие
+        // юниты получают ближайшую возможную клетку вместо «остаюсь на месте».
+        if (slots.Count < count)
+        {
+            for (int rank = 0; rank <= maxRank && slots.Count < count; rank++)
+            {
+                Vector2Int offset = back * rank;
+
+                for (int i = 0; i <= steps && slots.Count < count; i++)
+                {
+                    Vector2Int desired = start + dir * i + offset;
+
+                    // Позиция уже отдана под слот — пропускаем, иначе слот задублируется.
+                    if (used.Contains(desired))
+                    {
+                        continue;
+                    }
+
+                    if (!TryFindNearestUsableCell(desired, used, out Vector2Int cell))
+                    {
+                        continue;
+                    }
+
+                    slots.Add(cell);
+                    used.Add(cell);
+                }
+            }
+
+            if (slots.Count > placedByShape)
+            {
+                Debug.Log($"[Formation] Формация не поместилась целиком ({start}->{end}): " +
+                          $"{slots.Count - placedByShape} юнит(ов) получат ближайшие возможные клетки.");
             }
         }
 
         if (slots.Count < count)
         {
-            // Это НЕ баг, а предупреждение: формация обрезана границами сетки
-            // (например, построение в углу поля). Без лога игрок не видит, что
-            // часть юнитов не разместилась — они останутся на старых местах.
+            // Безнадёжный случай: подходящих клеток нет ни в фигуре, ни рядом
+            // (например, всё вокруг в камнях). Юниты без слота останутся на месте.
             Debug.LogWarning($"[Formation] Не хватает {count - slots.Count} слотов для формации: " +
-                             $"{start}->{end} (линия обрезана до границ сетки).");
+                             $"{start}->{end} (нет подходящих клеток ни в фигуре, ни рядом).");
         }
 
         return slots;
+    }
+
+    /// <summary>Можно ли ставить слот в клетку: в границах, не камень и не занята другим слотом.</summary>
+    private static bool IsSlotUsable(Vector2Int cell, HashSet<Vector2Int> used)
+    {
+        var gm = GridManager.Instance;
+
+        if (gm == null)
+        {
+            return !used.Contains(cell);
+        }
+
+        return gm.InBounds(cell) && !gm.IsBlocked(cell) && !used.Contains(cell);
+    }
+
+    /// <summary>
+    /// Перебор клеток вокруг desired «от ближних к дальним» (кольцами Чебышёва).
+    /// Внутри кольца сначала отдаются полностью свободные клетки (GridManager.IsFree —
+    /// на клетке никого нет), затем одна «запасная»: проходимая и не занятая другой
+    /// целью этой же команды (свои юниты всё равно уедут со своих клеток).
+    /// В сетке size×size дальше радиуса size клеток не существует — перебор конечен.
+    /// </summary>
+    public static IEnumerable<Vector2Int> EnumerateUsableCellsNearestFirst(Vector2Int desired,
+                                                                            HashSet<Vector2Int> reserved)
+    {
+        var gm = GridManager.Instance;
+
+        if (gm == null)
+        {
+            yield break;
+        }
+
+        int maxRadius = gm.size;
+
+        for (int radius = 0; radius <= maxRadius; radius++)
+        {
+            Vector2Int? fallback = null;
+
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    // Только периметр кольца: внутренние клетки уже отданы меньшими радиусами.
+                    if (Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy)) != radius)
+                    {
+                        continue;
+                    }
+
+                    Vector2Int cell = desired + new Vector2Int(dx, dy);
+
+                    if (!gm.InBounds(cell) || gm.IsBlocked(cell))
+                    {
+                        continue;
+                    }
+
+                    if (reserved != null && reserved.Contains(cell))
+                    {
+                        continue;
+                    }
+
+                    // tier-1: полностью свободная клетка — предпочтительный вариант.
+                    if (gm.IsFree(cell))
+                    {
+                        yield return cell;
+                        continue;
+                    }
+
+                    // tier-2: кандидат «на запас» — вернём его, только если в этом
+                    // кольце не нашлось ни одной полностью свободной клетки.
+                    if (!fallback.HasValue)
+                    {
+                        fallback = cell;
+                    }
+                }
+            }
+
+            if (fallback.HasValue)
+            {
+                yield return fallback.Value;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ближайшая подходящая клетка для желаемой позиции: первый кандидат из
+    /// EnumerateUsableCellsNearestFirst. false — подходящих клеток нет вовсе.
+    /// </summary>
+    public static bool TryFindNearestUsableCell(Vector2Int desired, HashSet<Vector2Int> reserved,
+                                                out Vector2Int cell)
+    {
+        foreach (Vector2Int candidate in EnumerateUsableCellsNearestFirst(desired, reserved))
+        {
+            cell = candidate;
+            return true;
+        }
+
+        cell = desired;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -239,6 +383,15 @@ public static class Formation
             },
             new Vector2Int(0, 1));
 
+        // T5: добор слотов у края карты. Тянем вдоль нижнего края (y = 0) на 12
+        // юнитов: линия упирается в границу, поэтому часть бойцов не помещается
+        // в фигуру и должна получить ближайшие возможные клетки. Проверяются
+        // СВОЙСТВА набора (ровно count слотов, все в границах, без дубликатов),
+        // а не конкретные клетки: они зависят от камней и стоящих юнитов.
+        TestEdgeFormationSlots(
+            "T5",
+            new Vector2Int(30, 0), new Vector2Int(41, 0), 12);
+
         Debug.Log("[Formation.SelfTest] Конец самотеста.");
     }
 
@@ -268,5 +421,41 @@ public static class Formation
                   $"  start={start}, end={end}, count={count}\n" +
                   $"  ожидалось: facing={expectedFacing}, слоты=[{string.Join(", ", expectedSlots)}]\n" +
                   $"  получено:  facing={facing}, слоты=[{string.Join(", ", actual)}]");
+    }
+
+    /// <summary>
+    /// Тест добора слотов: сверяет не конкретные клетки, а свойства набора —
+    /// количество слотов равно count, все клетки в границах сетки и не повторяются.
+    /// </summary>
+    private static void TestEdgeFormationSlots(string name, Vector2Int start, Vector2Int end, int count)
+    {
+        List<Vector2Int> actual = GetLineSlots(start, end, count, out Vector2Int facing);
+
+        var gm = GridManager.Instance;
+        var unique = new HashSet<Vector2Int>();
+
+        bool allUnique = true;
+        bool allInBounds = gm != null;
+
+        foreach (Vector2Int cell in actual)
+        {
+            if (!unique.Add(cell))
+            {
+                allUnique = false;
+            }
+
+            if (gm != null && !gm.InBounds(cell))
+            {
+                allInBounds = false;
+            }
+        }
+
+        bool ok = actual.Count == count && allUnique && allInBounds;
+
+        Debug.Log($"[Formation.SelfTest] {name}: {(ok ? "PASS" : "FAIL")}\n" +
+                  $"  start={start}, end={end}, count={count}, facing={facing}\n" +
+                  $"  слотов: {actual.Count} (ожидалось {count}), уникальных: {allUnique}, " +
+                  $"все в границах: {allInBounds}\n" +
+                  $"  получено: [{string.Join(", ", actual)}]");
     }
 }
