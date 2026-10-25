@@ -56,7 +56,6 @@ MonoBehaviour:
   attackCooldown: 0.8
   cooldownTimer: 0
   matHit: {fileID: 0}
-  detectionRange: 10
 --- !u!1001 &446890498322548763
 PrefabInstance:
   m_ObjectHideFlags: 0

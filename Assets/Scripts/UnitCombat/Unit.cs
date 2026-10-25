@@ -193,9 +193,6 @@ public class Unit : MonoBehaviour
 
     // --- Авто-поворот к ближайшему врагу ---
 
-    /// <summary>Радиус обнаружения врагов для авто-поворота, в клетках.</summary>
-    public float detectionRange = 10f;
-
     /// <summary>Таймер пересчёта направления взгляда.</summary>
     private float facingUpdateTimer = 0f;
 
@@ -328,53 +325,6 @@ public class Unit : MonoBehaviour
             facingUpdateTimer = 0f;
             UpdateFacing();
         }
-    }
-
-    /// <summary>
-    /// Найти ближайшего живого врага (team != this.team) в радиусе detectionRange.
-    /// Расстояние считаем в клетках метрикой Чебышёва max(|dx|,|dy|) (Fix-1, п.4:
-    /// унификация меры с EnemyAI — «сосед по диагонали» = 1, а не 2).
-    /// Возвращает Unit или null.
-    /// </summary>
-    public Unit FindNearestEnemy()
-    {
-        var gm = GridManager.Instance;
-
-        if (gm == null)
-        {
-            return null;
-        }
-
-        Unit nearest = null;
-        int bestDist = int.MaxValue;
-
-        List<Unit> all = gm.GetAllUnits();
-
-        for (int i = 0; i < all.Count; i++)
-        {
-            Unit u = all[i];
-
-            // Мёртвый/уничтоженный юнит (unity-null или флаг isDead — Destroy
-            // отложен до конца кадра) или своя команда — пропускаем.
-            if (u == null || u.gameObject == null || u.isDead || u.team == this.team)
-            {
-                continue;
-            }
-
-            // Расстояние в клетках (Чебышёв, целочисленно). detectionRange
-            // трактуется в клетках, а не в мировых единицах — не зависит от cellSize.
-            int dx = Mathf.Abs(u.GridPos.x - GridPos.x);
-            int dy = Mathf.Abs(u.GridPos.y - GridPos.y);
-            int dist = Mathf.Max(dx, dy);
-
-            if (dist <= detectionRange && dist < bestDist)
-            {
-                bestDist = dist;
-                nearest = u;
-            }
-        }
-
-        return nearest;
     }
 
     /// <summary>Боевой радиус авто-поворота, клеток (Чебышёв, Fix-2 п.2).</summary>
